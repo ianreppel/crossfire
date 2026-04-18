@@ -1,0 +1,329 @@
+# ============================================================================
+# Crossfire Configuration
+# ============================================================================
+#
+# Model selection philosophy:
+#
+#   Models are listed in interleaved quality/budget order:
+#     1st = best quality, 2nd = cheapest, 3rd = second best, 4th = second cheapest
+#   This way --num-generators 2 picks the best + cheapest (good diversity),
+#   and --num-generators 4 scales up without being all-cheap or all-expensive.
+#
+#   Per-mode [modes.*] sections override the global [models.*] defaults.
+#   Only roles that differ from the global need to be specified.
+#
+#   Prices are per 1M tokens (input/output) as of April 2026.
+#   Check https://openrouter.ai/models for current rates.
+# ============================================================================
+
+[openrouter]
+api_key_env = "OPENROUTER_API_KEY"
+
+# ---------------------------------------------------------------------------
+# Global defaults (fallback when a mode doesn't override a role)
+# ---------------------------------------------------------------------------
+
+[models.generators]
+names = [
+    "openrouter:anthropic/claude-sonnet-4",          # $3/$15      — strong all-rounder
+    "openrouter:deepseek/deepseek-v3.2",             # $0.26/$0.38 — near-GPT-5 quality, but dirt cheap
+    "openrouter:openai/gpt-4.1",                     # $2/$8       — solid yet cheap
+    "openrouter:meta-llama/llama-4-maverick",        # $0.15/$0.60 — cheapest, good for diversity
+    "openrouter:mistralai/devstral-2512",            # $0.40/$2    — agentic code specialist
+]
+context_window = 200000
+max_output_tokens = 12000
+
+[models.generators.context_windows]
+"openrouter:deepseek/deepseek-v3.2"       = 64000
+"openrouter:meta-llama/llama-4-maverick"  = 1000000
+"openrouter:mistralai/devstral-2512"      = 262000
+
+[models.reviewers]
+# Reviewers are where the adversarial value lives. 
+# Reasoning models and blunt critics matter more than raw generation power.
+# 15 models supports up to 5 generators * 3 reviewers per candidate.
+names = [
+    "openrouter:openai/o4-mini",                     # $1.10/$4.40  — critical reasoning
+    "openrouter:google/gemini-3.1-flash-lite",       # $0.25/$1.50  — fast, 1M context
+    "openrouter:mistralai/mistral-medium-3",         # $0.40/$2     — cheap generalist
+    "openrouter:x-ai/grok-3-mini",                   # $0.30/$0.50  — concise, opinionated
+    "openrouter:qwen/qwen-plus-2025-07-28",          # $0.26/$0.78  — hybrid reasoning
+    "openrouter:openai/gpt-4.1-mini",                # $0.40/$1.60  — cheap, fast, competent
+    "openrouter:anthropic/claude-haiku-4.5",         # $1/$5        — fast critic
+    "openrouter:google/gemini-2.5-flash",            # $0.30/$2.50  — 1M context, reasoning
+    "openrouter:deepseek/deepseek-v3.2",             # $0.26/$0.38  — blunt yet detail-oriented
+    "openrouter:mistralai/devstral-2512",            # $0.40/$2     — code-aware perspective
+    "openrouter:google/gemini-2.5-pro-preview-03-25", # $1.25/$10   — verbose but thorough
+    "openrouter:perplexity/sonar-reasoning-pro",     # $2/$8        — reasoning + search
+    "openrouter:meta-llama/llama-4-maverick",        # $0.15/$0.60  — cheapest structure checker
+    "openrouter:openai/gpt-4.1",                     # $2/$8        — solid generalist
+    "openrouter:anthropic/claude-sonnet-4",          # $3/$15       — thorough but expensive
+]
+context_window = 128000
+max_output_tokens = 8000
+
+[models.reviewers.context_windows]
+"openrouter:deepseek/deepseek-v3.2"                = 64000
+"openrouter:google/gemini-3.1-flash-lite"          = 1000000
+"openrouter:google/gemini-2.5-flash"               = 1000000
+"openrouter:google/gemini-2.5-pro-preview-03-25"   = 1000000
+"openrouter:qwen/qwen-plus-2025-07-28"             = 1000000
+"openrouter:meta-llama/llama-4-maverick"           = 1000000
+"openrouter:mistralai/devstral-2512"               = 262000
+"openrouter:anthropic/claude-haiku-4.5"            = 200000
+"openrouter:anthropic/claude-sonnet-4"             = 200000
+"openrouter:openai/o4-mini"                        = 200000
+"openrouter:openai/gpt-4.1"                        = 200000
+
+[models.reviewers.max_output_tokens_by_model]
+"openrouter:deepseek/deepseek-v3.2" = 6000
+
+[models.enricher]
+names = ["openrouter:openai/gpt-4.1-mini"]           # $0.40/$1.60 — cheap, fast, good at expansion
+context_window = 128000
+max_output_tokens = 4096
+
+[models.synthesizer]
+names = [
+    "openrouter:anthropic/claude-opus-4",            # $15/$75    — best multi-doc reasoning
+    "openrouter:openai/gpt-5",                       # $1.25/$10  — strong reasoning, 400K context
+]
+context_window = 200000
+max_output_tokens = 32000
+
+[models.synthesizer.context_windows]
+"openrouter:openai/gpt-5" = 400000
+
+[models.synthesizer.max_output_tokens_by_model]
+"openrouter:openai/gpt-5" = 128000
+
+[search]
+enabled = true
+provider = "tavily"
+
+[limits]
+max_concurrent_requests = 10
+temperature_default = 0.2
+
+# ============================================================================
+# Mode-specific overrides
+# ============================================================================
+
+# --- Research -----------------------------------------------------------------
+# Perplexity provides grounded search with real citations. 
+# Multiple search-capable generators give diverse sourcing. 
+# Reviewers must not overlap with generators!
+[modes.research.generators]
+names = [
+    "openrouter:perplexity/sonar-pro",               # $3/$15     — grounded search, real citations
+    "openrouter:deepseek/deepseek-v3.2",             # $0.26/$0.38 — cheap analytical angle
+    "openrouter:anthropic/claude-sonnet-4",          # $3/$15     — structured analysis
+    "openrouter:openai/gpt-4.1",                     # $2/$8      — solid researcher
+    "openrouter:perplexity/sonar-deep-research",     # $2/$8      — multi-step deep research
+]
+context_window = 200000
+max_output_tokens = 12000
+
+[modes.research.generators.context_windows]
+"openrouter:perplexity/sonar-pro"           = 200000
+"openrouter:perplexity/sonar-deep-research" = 128000
+"openrouter:deepseek/deepseek-v3.2"         = 64000
+
+[modes.research.reviewers]
+# 15 reviewers: supports up to 5 generators * 3 reviewers per candidate.
+# None overlap with the research generators above.
+names = [
+    "openrouter:openai/o4-mini",                     # $1.10/$4.40  — reasoning claim checker
+    "openrouter:google/gemini-3.1-flash-lite",       # $0.25/$1.50  — fast, cheap
+    "openrouter:mistralai/mistral-medium-3",         # $0.40/$2     — generalist
+    "openrouter:x-ai/grok-3-mini",                   # $0.30/$0.50  — concise critic
+    "openrouter:qwen/qwen-plus-2025-07-28",          # $0.26/$0.78  — hybrid reasoner
+    "openrouter:openai/gpt-4.1-mini",                # $0.40/$1.60  — cheap, fast
+    "openrouter:anthropic/claude-haiku-4.5",         # $1/$5        — fast Anthropic critic
+    "openrouter:google/gemini-2.5-flash",            # $0.30/$2.50  — reasoning flash
+    "openrouter:mistralai/devstral-2512",            # $0.40/$2     — different perspective
+    "openrouter:google/gemini-2.5-pro-preview-03-25", # $1.25/$10   — verbose but thorough
+    "openrouter:perplexity/sonar-reasoning-pro",     # $2/$8        — reasoning + search
+    "openrouter:meta-llama/llama-4-maverick",        # $0.15/$0.60  — cheapest
+    "openrouter:openai/gpt-4o-mini",                 # $0.15/$0.60  — tiny, fast
+    "openrouter:deepseek/deepseek-r1",               # $0.55/$2.19  — reasoning specialist
+    "openrouter:google/gemma-3-27b-it",              # free         — zero-cost filler
+]
+context_window = 128000
+max_output_tokens = 8000
+
+# Synthesizer: inherits global (Opus + GPT-5 rotating) — research needs the best
+
+# --- Code ---------------------------------------------------------------------
+# Codex is SOTA for code; DeepSeek V3.2 is GPT-5 class at a fraction of the cost.
+# o3 synthesizes code via reasoning.
+[modes.code.generators]
+names = [
+    "openrouter:openai/gpt-5.3-codex-20260224",     # $1.75/$14  — SOTA agentic code
+    "openrouter:deepseek/deepseek-v3.2",             # $0.26/$0.38 — GPT-5 class code, dirt cheap
+    "openrouter:openai/gpt-4.1",                     # $2/$8      — solid coder
+    "openrouter:mistralai/devstral-2512",            # $0.40/$2   — agentic multi-file code
+    "openrouter:anthropic/claude-sonnet-4",          # $3/$15     — strong code generation
+]
+context_window = 200000
+max_output_tokens = 12000
+
+[modes.code.generators.context_windows]
+"openrouter:deepseek/deepseek-v3.2"  = 64000
+"openrouter:mistralai/devstral-2512" = 262000
+
+[modes.code.reviewers]
+names = [
+    "openrouter:openai/o4-mini",                     # $1.10/$4.40  — finds logic bugs
+    "openrouter:google/gemini-3.1-flash-lite",       # $0.25/$1.50  — fast structural check
+    "openrouter:mistralai/mistral-medium-3",         # $0.40/$2     — generalist
+    "openrouter:x-ai/grok-3-mini",                   # $0.30/$0.50  — concise
+    "openrouter:qwen/qwen-plus-2025-07-28",          # $0.26/$0.78  — hybrid reasoner
+    "openrouter:openai/gpt-4.1-mini",                # $0.40/$1.60  — cheap
+    "openrouter:anthropic/claude-haiku-4.5",         # $1/$5        — fast code reviewer
+    "openrouter:google/gemini-2.5-flash",            # $0.30/$2.50  — reasoning flash
+    "openrouter:meta-llama/llama-4-maverick",        # $0.15/$0.60  — structure/formatting
+    "openrouter:google/gemini-2.5-pro-preview-03-25", # $1.25/$10   — thorough
+    "openrouter:perplexity/sonar-reasoning-pro",     # $2/$8        — reasoning
+    "openrouter:deepseek/deepseek-r1",               # $0.55/$2.19  — reasoning specialist
+    "openrouter:openai/gpt-4o-mini",                 # $0.15/$0.60  — tiny, fast
+    "openrouter:google/gemma-3-27b-it",              # free         — zero-cost filler
+    "openrouter:anthropic/claude-sonnet-4",          # $3/$15       — thorough code review
+]
+context_window = 200000
+max_output_tokens = 8000
+
+[modes.code.synthesizer]
+names = ["openrouter:openai/o3"]                      # $10/$40    — reasoning model for code merge
+context_window = 200000
+max_output_tokens = 32000
+
+# --- Edit ---------------------------------------------------------------------
+# Editing is lighter work. Sonnet synthesizes edits cheaply.
+[modes.edit.generators]
+names = [
+    "openrouter:anthropic/claude-sonnet-4",          # $3/$15     — concise, decisive editor
+    "openrouter:deepseek/deepseek-v3.2",             # $0.26/$0.38 — cheap
+    "openrouter:openai/gpt-4.1",                     # $2/$8      — good editor
+    "openrouter:mistralai/devstral-2512",            # $0.40/$2   — different style
+    "openrouter:meta-llama/llama-4-maverick",        # $0.15/$0.60 — cheapest
+]
+context_window = 200000
+max_output_tokens = 12000
+
+[modes.edit.generators.context_windows]
+"openrouter:deepseek/deepseek-v3.2"      = 64000
+"openrouter:mistralai/devstral-2512"     = 262000
+"openrouter:meta-llama/llama-4-maverick" = 1000000
+
+[modes.edit.reviewers]
+names = [
+    "openrouter:openai/o4-mini",                     # $1.10/$4.40  — clarity critique
+    "openrouter:google/gemini-3.1-flash-lite",       # $0.25/$1.50  — fast
+    "openrouter:mistralai/mistral-medium-3",         # $0.40/$2     — generalist
+    "openrouter:x-ai/grok-3-mini",                   # $0.30/$0.50  — concise
+    "openrouter:qwen/qwen-plus-2025-07-28",          # $0.26/$0.78  — hybrid reasoner
+    "openrouter:openai/gpt-4.1-mini",                # $0.40/$1.60  — cheap
+    "openrouter:anthropic/claude-haiku-4.5",         # $1/$5        — fast
+    "openrouter:google/gemini-2.5-flash",            # $0.30/$2.50  — reasoning flash
+    "openrouter:google/gemini-2.5-pro-preview-03-25", # $1.25/$10   — verbose (useful for editing)
+    "openrouter:perplexity/sonar-reasoning-pro",     # $2/$8        — reasoning
+    "openrouter:deepseek/deepseek-r1",               # $0.55/$2.19  — reasoning specialist
+    "openrouter:openai/gpt-4o-mini",                 # $0.15/$0.60  — tiny
+    "openrouter:meta-llama/llama-4-maverick",        # $0.15/$0.60  — cheapest
+    "openrouter:google/gemma-3-27b-it",              # free         — zero-cost filler
+    "openrouter:openai/gpt-4.1",                     # $2/$8        — solid
+]
+context_window = 128000
+max_output_tokens = 8000
+
+[modes.edit.synthesizer]
+names = ["openrouter:anthropic/claude-sonnet-4"]      # $3/$15 — editing doesn't need Opus
+context_window = 200000
+max_output_tokens = 12000
+
+# --- Check --------------------------------------------------------------------
+# Accuracy demands strong synthesis. Perplexity for grounding.
+[modes.check.generators]
+names = [
+    "openrouter:openai/gpt-4.1",                     # $2/$8      — methodical
+    "openrouter:deepseek/deepseek-v3.2",             # $0.26/$0.38 — cheap
+    "openrouter:anthropic/claude-sonnet-4",          # $3/$15     — structured
+    "openrouter:perplexity/sonar-pro",               # $3/$15     — grounded search for fact-check
+    "openrouter:meta-llama/llama-4-maverick",        # $0.15/$0.60 — cheapest
+]
+context_window = 200000
+max_output_tokens = 12000
+
+[modes.check.generators.context_windows]
+"openrouter:deepseek/deepseek-v3.2"      = 64000
+"openrouter:perplexity/sonar-pro"        = 200000
+"openrouter:meta-llama/llama-4-maverick" = 1000000
+
+[modes.check.reviewers]
+names = [
+    "openrouter:openai/o4-mini",                     # $1.10/$4.40  — logic validation
+    "openrouter:google/gemini-3.1-flash-lite",       # $0.25/$1.50  — fast
+    "openrouter:mistralai/mistral-medium-3",         # $0.40/$2     — generalist
+    "openrouter:x-ai/grok-3-mini",                   # $0.30/$0.50  — concise
+    "openrouter:qwen/qwen-plus-2025-07-28",          # $0.26/$0.78  — hybrid reasoner
+    "openrouter:openai/gpt-4.1-mini",                # $0.40/$1.60  — cheap
+    "openrouter:anthropic/claude-haiku-4.5",         # $1/$5        — fast
+    "openrouter:google/gemini-2.5-flash",            # $0.30/$2.50  — reasoning flash
+    "openrouter:mistralai/devstral-2512",            # $0.40/$2     — different perspective
+    "openrouter:google/gemini-2.5-pro-preview-03-25", # $1.25/$10   — thorough
+    "openrouter:perplexity/sonar-reasoning-pro",     # $2/$8        — reasoning + search
+    "openrouter:deepseek/deepseek-r1",               # $0.55/$2.19  — reasoning specialist
+    "openrouter:openai/gpt-4o-mini",                 # $0.15/$0.60  — tiny
+    "openrouter:google/gemma-3-27b-it",              # free         — zero-cost filler
+    "openrouter:meta-llama/llama-4-maverick",        # $0.15/$0.60  — cheapest
+]
+context_window = 128000
+max_output_tokens = 8000
+
+# Synthesizer: inherits global (Opus + GPT-5 rotating) — accuracy needs the best
+
+# --- Writer -------------------------------------------------------------------
+# Creative voice needs diverse generators. Sonnet synthesizes to preserve voice.
+[modes.write.generators]
+names = [
+    "openrouter:anthropic/claude-sonnet-4",          # $3/$15     — strong voice
+    "openrouter:deepseek/deepseek-v3.2",             # $0.26/$0.38 — cheap, different tone
+    "openrouter:google/gemini-2.5-pro-preview-03-25", # $1.25/$10  — verbose (a feature for writing)
+    "openrouter:openai/gpt-4.1",                     # $2/$8      — solid
+    "openrouter:meta-llama/llama-4-maverick",        # $0.15/$0.60 — cheapest
+]
+context_window = 200000
+max_output_tokens = 12000
+
+[modes.write.generators.context_windows]
+"openrouter:deepseek/deepseek-v3.2"                = 64000
+"openrouter:google/gemini-2.5-pro-preview-03-25"   = 1000000
+"openrouter:meta-llama/llama-4-maverick"           = 1000000
+
+[modes.write.reviewers]
+names = [
+    "openrouter:openai/gpt-4.1",                     # $2/$8        — tough literary critic
+    "openrouter:google/gemini-3.1-flash-lite",       # $0.25/$1.50  — fast
+    "openrouter:openai/o4-mini",                     # $1.10/$4.40  — structural critique
+    "openrouter:x-ai/grok-3-mini",                   # $0.30/$0.50  — concise
+    "openrouter:mistralai/mistral-medium-3",         # $0.40/$2     — generalist
+    "openrouter:qwen/qwen-plus-2025-07-28",          # $0.26/$0.78  — hybrid reasoner
+    "openrouter:openai/gpt-4.1-mini",                # $0.40/$1.60  — cheap
+    "openrouter:anthropic/claude-haiku-4.5",         # $1/$5        — fast
+    "openrouter:google/gemini-2.5-flash",            # $0.30/$2.50  — reasoning flash
+    "openrouter:mistralai/devstral-2512",            # $0.40/$2     — different perspective
+    "openrouter:perplexity/sonar-reasoning-pro",     # $2/$8        — reasoning
+    "openrouter:deepseek/deepseek-r1",               # $0.55/$2.19  — reasoning specialist
+    "openrouter:openai/gpt-4o-mini",                 # $0.15/$0.60  — tiny
+    "openrouter:google/gemma-3-27b-it",              # free         — zero-cost filler
+    "openrouter:meta-llama/llama-4-maverick",        # $0.15/$0.60  — cheapest
+]
+context_window = 200000
+max_output_tokens = 8000
+
+[modes.write.synthesizer]
+names = ["openrouter:anthropic/claude-sonnet-4"]      # $3/$15 — voice preservation
+context_window = 200000
+max_output_tokens = 12000

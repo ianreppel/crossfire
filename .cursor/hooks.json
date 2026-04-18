@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "hooks": {
+    "afterFileEdit": [
+      {
+        "command": ".cursor/hooks/format-and-lint.sh",
+        "matcher": "Write",
+        "timeout": 60
+      }
+    ]
+  }
+}
