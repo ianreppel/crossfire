@@ -24,6 +24,7 @@ flowchart LR
 
 Each round runs _generation → review → synthesis_ sequentially; within generation and review, model calls run in parallel.
 Rounds repeat until the configured limit or until reviewers find no material weaknesses (early stop).
+Here, "material" means substantive issues like factual errors, logic flaws, or broken code, not style issues or nitpicks.
 Each mode (research, code, edit, check, write) has its own review protocol: rubber duck debugging for code, precision review for editing, literary criticism for writing, and so on.
 
 ## How to use
