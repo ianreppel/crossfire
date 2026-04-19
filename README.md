@@ -237,6 +237,7 @@ The pre-commit hooks automatically run `docformatter`, `ruff --fix`, `ruff forma
 
 ```
 crossfire/
+├── docs/                     # example artefacts
 ├── crossfire/
 │   ├── core/
 │   │   ├── orchestrator.py   # round loop, concurrency, failure handling
