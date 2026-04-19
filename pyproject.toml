@@ -2,7 +2,7 @@
 name = "crossfire"
 version = "0.1.0"
 description = "Multi-agent adversarial refinement orchestrator (i.e. Ralph Wiggum on 'roids)"
-maintainers = [{name = "Ian Reppel", email = "code@ianreppel.org"}]
+maintainers = [{name = "Ian Reppel", email = "web@ianreppel.org"}]
 license = "MIT"
 requires-python = ">=3.12"
 dependencies = [
