@@ -1,13 +1,16 @@
-# Edit pass: tighten the launch post
+# Step 2: Crossfire launch announcement — edit mode
 
-You are polishing a draft blog post about Crossfire for publication on a static site (Markdown, no special plugins).
+Tighten for a static Jekyll site, fully in Markdown, ready to paste.
+Cut repetition and setup, but keep headings scannable.
+Facts must match the context file (README).
 
-**Goals:**
+Every fenced `uv run` block must match `docs/launch-announcement-prompt.md` character for character.
 
-- Cut repetition and throat-clearing; keep punchy sections and skimmable headings.
-- Preserve factual claims and any CLI examples — they must stay aligned with the README.
-- Keep the voice: witty, human, **The Simpsons** allowed in moderation — do not let jokes crowd out clarity.
-- Avoid corporate filler and banned buzzwords (no “delve”, “holistic”, “synergy”, “dogfooding”, “leverage” as a verb, etc.).
-- Aim for roughly **900–1200 words** unless the draft is already tighter.
+Keep the voice unique and non-corporate. 
+Bland is not acceptable!
+Keep first person light: do not rewrite into "we", and keep Crossfire as the subject rather than extended "I" narration.
+Keep one light The Simpsons / Ralph Wiggum nod and the README's evolutionary search link if the draft already has them.
+Do not strip those for brevity.
 
-**Output:** the full revised post in Markdown only, ready to paste into the site.
+Roughly 900–1,200 words unless the draft is already shorter.
+The post must open with a single strong one-liner that draws the reader in.
