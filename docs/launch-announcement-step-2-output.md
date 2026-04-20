@@ -1,39 +1,43 @@
-# What if your draft could get critical reviews on demand?
+# Crossfire: Automating the LLM Argument
 
-You have a prompt—for code, for an essay, for analysis. You send it to one LLM. The output is okay—a starting point. You open another tab, try a different model. That one has better structure but hallucinates a key detail. A third gets the detail right but writes like a corporate drone.
+What if Ralph Wiggum had friends?
 
-You start cutting and pasting. Juggling tabs, merging ideas, fixing flaws. You become the human synthesizer for inconsistent AI assistants. It works, but it's tedious and error-prone.
+I built Crossfire to automate the only reliable way to get strong LLM results: make them argue. Manually juggling browser tabs to have models critique each other works but is miserable. Crossfire runs the whole process for you.
 
-That's why **Crossfire** exists.
+The core problem is false confidence. A single LLM's answer sounds convincing, but without counterarguments, you can't gauge its strength. The solution is adversarial generation: multiple models create competing solutions while others attack them for weaknesses.
 
-## The Adversarial Loop
+## How It Works: Generation, Review, Synthesis
 
-Crossfire is a multi-agent adversarial refinement orchestrator. It takes your instruction, sends it to several LLMs to generate drafts, then sends each draft to other LLMs for critical review. Finally, it synthesizes the best parts into a single, refined artifact.
+Give Crossfire a task. It sends that prompt to multiple LLMs simultaneously to generate different approaches. Each candidate then faces multiple reviewer models hunting for factual errors, logic flaws, security holes, or other critical weaknesses. Finally, a synthesizer model takes all candidates and reviews, picks the best parts, and combines them into a refined result.
 
-The core loop:
+This generation → review → synthesis loop repeats for as many rounds as you specify.
 
-1. **Generate** — Create multiple independent attempts at the task
-2. **Review** — Scrutinize each attempt from multiple adversarial perspectives  
-3. **Synthesize** — Discard the weak, merge the strong, produce something better
+The key insight? Fresh contexts prevent the groupthink that happens when you ask the same model to "improve" its own work. Each round starts clean, avoiding local optima. It's [multi-start evolutionary search](https://en.wikipedia.org/wiki/Evolutionary_algorithm) with delayed selection—the Ralph Wiggum method, but with actual friends providing feedback.
 
-This cycle repeats, with each round building on the synthesis of the last. Bad ideas get eliminated early so good ones can be rebuilt stronger. It escapes the local maximum of a single model's thinking by introducing fresh, critical contexts at each step.
+## Specialists, Not Generic Critics
 
-This multi-start evolutionary search—where multiple attempts compete and the best elements survive—is what makes it work. It's an [improved Ralph Wiggum method](https://ianreppel.org/ralph-wiggum-as-a-degenerate-evolutionary-search/) that filters out the worst through systematic build → break → rebuild cycles.
+The reviewers aren't bland critics. They're specialists with specific protocols:
 
-## Why Engineers Should Care
+* **Code Mode:** Paranoid senior engineers hunting for security flaws and missing edge cases.
+* **Edit Mode:** Ruthless copyeditors slashing jargon and weak phrasing.
+* **Write Mode:** A writers' group looking for plot holes and emotional authenticity.
 
-Crossfire automates the adversarial pipeline. Instead of trusting a single LLM's first attempt, it runs systematic pressure that catches flaws before they reach your final output. Each round applies fresh eyes so reviewers see new text with clear perspective rather than iterating endlessly on the same tired draft.
+The system finds material weaknesses, not bikeshed style.
 
-For engineers who want higher-quality, vetted outputs—code that compiles, prose that's clear, research that stands up to inspection—Crossfire provides a systematic way to get there without juggling browser tabs or trusting a single pass.
+## From Simple Queries to Complex Orchestration
 
-## What It Looks Like
+For a straightforward research task:
 
-This blog post was generated using Crossfire's two-stage pipeline. First, a draft in `write` mode:
+```bash
+uv run crossfire run --mode research --instruction "Compare error correction strategies for superconducting vs trapped-ion qubits"
+```
+
+For a complex workflow, like writing this announcement:
 
 ```bash
 uv run crossfire run \
   --mode write \
-  --instruction-file docs/launch-announcement-prompt.md \
+  --instruction-file docs/launch-announcement-step-1-write-mode.md \
   --context-file README.md \
   --num-generators 5 \
   --num-reviewers-per-candidate 3 \
@@ -41,39 +45,20 @@ uv run crossfire run \
   --output docs/launch-announcement-step-1-output.md
 ```
 
-Then tightened in `edit` mode:
+Then refine it:
 
 ```bash
 uv run crossfire run \
   --mode edit \
-  --instruction-file docs/launch-announcement-tighten.md \
+  --no-enrich \
+  --instruction-file docs/launch-announcement-step-2-edit-mode.md \
   --context-file docs/launch-announcement-step-1-output.md \
   --num-generators 3 \
-  --num-reviewers-per-candidate 5 \
-  --num-rounds 5 \
+  --num-reviewers-per-candidate 3 \
+  --num-rounds 3 \
   --output docs/launch-announcement-step-2-output.md
 ```
 
-For quick research questions, it's even simpler:
+Within each round, generation and review happen in parallel. Crossfire stops early if reviewers find no material weaknesses, since further rounds won't add value.
 
-```bash
-uv run crossfire run \
-  --mode research \
-  --instruction "Compare error correction strategies for superconducting vs trapped-ion qubits"
-```
-
-A typical run looks like this in your terminal:
-
-```terminal
-⠧ Round 1/3 | Phase: Generate | 5 candidates
-⠧ Round 1/3 | Phase: Review   | 15 reviews  
-⠧ Round 1/3 | Phase: Synthesize
-✓ Round 1 complete. Weaknesses found: 7
-⠧ Round 2/3 | Phase: Generate | 5 candidates
-⠧ Round 2/3 | Phase: Review   | 15 reviews
-⠧ Round 2/3 | Phase: Synthesize  
-✓ Round 2 complete. Weaknesses found: 2
-✓ Run complete. Early stop after 2 rounds. Output saved to runs/20250415_142356/output.md
-```
-
-Crossfire replaces the manual "let me try that again" with structured adversarial refinement. It turns multiple LLMs into a practical tool—not by making them agree, but by making them work through systematic build → break → rebuild cycles until what remains can withstand scrutiny.
+_This post was written and edited by Crossfire (COST_PLACEHOLDER, TIME_PLACEHOLDER), and subsequently reviewed and tweaked by Ian._
