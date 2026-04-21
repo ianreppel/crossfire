@@ -1,0 +1,16 @@
+---
+description: Testing conventions — pytest patterns, fixtures, assertions
+alwaysApply: true
+---
+
+# Testing
+
+- Module docstrings follow the pattern `"""Tests for <topic>."""`
+- Skip test-function docstrings when the test name already explains the intent
+- Prefer `@pytest.mark.parametrize` over copy-pasted test functions with different inputs
+- Use fixtures from `conftest.py` rather than hardcoding shared setup inline
+- New shared test objects belong in `conftest.py` as fixtures, not as module-level constants in test files
+- One assertion concept per test (multiple `assert` lines are fine if they test one logical thing)
+- Dry-run determinism via SHA-256 hashing of all call parameters
+- Test files may import private functions when needed (e.g. `_build_review_triage`)
+- All tests + linting + typing must pass before merging
