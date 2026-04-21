@@ -1,6 +1,6 @@
 [project]
 name = "crossfire"
-version = "0.1.0"
+version = "0.2.0"
 description = "Multi-agent adversarial refinement orchestrator (i.e. Ralph Wiggum on 'roids)"
 maintainers = [{name = "Ian Reppel", email = "web@ianreppel.org"}]
 license = "MIT"

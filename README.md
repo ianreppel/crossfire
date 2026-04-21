@@ -96,6 +96,18 @@ uv run crossfire run \
   --context-file paper.pdf
 ```
 
+### Fetch pricing
+
+Fetch current model pricing from OpenRouter into a local `pricing.json` cache:
+
+```bash
+uv run crossfire prices
+```
+
+This enables cost estimates during `--dry-run`.
+The file stores pricing for all OpenRouter models (~25 KB) so you can add new models to `crossfire.toml` without re-fetching.
+Run it again whenever you want fresh rates.
+
 ### Clean up
 Remove all generated and cached files (runs, `.venv`, caches, bytecode):
 
@@ -152,7 +164,7 @@ After each round, Crossfire checks whether any reviewer found material weaknesse
 If all reviews report no weaknesses, the remaining rounds are skipped, as there is no value in further refinement.
 Disable with `--no-early-stop`.
 
-### Generator refusal
+### Generator refusal detection
 Some models occasionally refuse to produce output, responding with meta-commentary like "the sources are insufficient" instead of answering the prompt.
 Crossfire detects these refusals and attempts a replacement model from the generator pool.
 If no replacement is available, the generator is dropped and the round fails gracefully.
@@ -228,6 +240,7 @@ uv run mypy crossfire/         # type check
 
 Use `--dry-run` to verify your changes without making API calls.
 It produces deterministic synthetic outputs via SHA-256 hashing.
+If `pricing.json` is present (from `crossfire prices`), the summary table includes an upper-bound cost estimate.
 
 ```bash
 uv run crossfire run \
@@ -267,6 +280,7 @@ crossfire/
 │   │   ├── progress.py       # progress reporting
 │   │   ├── reviewers.py      # reviewer-to-candidate assignment
 │   │   ├── search.py         # search integration with Tavily
+│   │   ├── pricing.py        # OpenRouter pricing cache and cost estimation
 │   │   ├── exclamations.py   # The Simpsons prefixes for error messages
 │   │   └── archive.py        # disk archival
 │   ├── ui/
@@ -296,6 +310,11 @@ Transient errors degrade gracefully to empty results rather than aborting the ru
 When prompts exceed the token budget, Crossfire drops sections and sentences rather than summarizing.
 The task instruction is _never_ compressed.
 
+**Cost estimates are approximate.**
+The dry-run estimate uses fixed output-token defaults (~5,000 tokens per generator/synthesizer call, ~2,000 per reviewer) and average pricing across each model group.
+It does not predict early stopping or actual output lengths, so it typically overestimates by 2-4x for runs that stop early.
+If the instruction contains an explicit word or page count, the estimate uses that instead, but the regex may also match counts that describe the input rather than the desired output.
+
 **No streaming.**
 Responses are received in full.
 
@@ -305,6 +324,5 @@ Each run is self-contained, so a crashed run must be restarted from scratch.
 ### Ideas for improvements
 
 - Resume: restart interrupted runs from the last completed round
-- Cost prediction: estimate total run costs upfront from prompt sizes and model pricing, reported as part of `--dry-run` output
 - Local UI: browser-based interface with live progress, output panel, and searchable run history
 - Library and containerization: extract a reusable library and Docker image so Crossfire can run as a service (switch to UTC-based logs)

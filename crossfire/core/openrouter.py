@@ -14,6 +14,12 @@ from crossfire.core.domain import CostEntry, Role
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
+
+def strip_model_prefix(model: str) -> str:
+    """Strips the ``openrouter:`` vendor prefix from a model ID."""
+    return model.removeprefix("openrouter:")
+
+
 _TRANSIENT_STATUS_CODES = {429, 500, 502, 503, 504}
 MAX_RETRIES = 2
 
@@ -49,7 +55,7 @@ async def call_openrouter(
                 "HTTP-Referer": "https://github.com/ianreppel/crossfire",
             },
             json={
-                "model": model.removeprefix("openrouter:"),
+                "model": strip_model_prefix(model),
                 "messages": [
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},

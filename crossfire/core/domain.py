@@ -295,6 +295,15 @@ class RunParameters:
     early_stop_threshold: int = 1
 
 
+@dataclass(frozen=True)
+class CostEstimate:
+    """Upper-bound cost estimate for a dry run, based on cached OpenRouter pricing."""
+
+    total_usd: float
+    missing_models: tuple[str, ...] = ()
+    fetched_at: str = ""
+
+
 @dataclass
 class CostEntry:
     """Token and cost information from a single LLM call in OpenRouter."""
