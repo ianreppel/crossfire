@@ -46,7 +46,7 @@ class TestWriterRubberDuckReviewing:
         assert "show vs tell" in system.lower()
         assert "abandoned arcs" in system.lower()
 
-        assert "skeptical" in system.lower()
+        assert "sceptical" in system.lower()
         assert "convince" in system.lower()
 
     def test_deus_ex_llm_detector(self):

@@ -76,9 +76,7 @@ class TUILogHandler(logging.Handler):
 
 
 class TUI:
-    """Implements the ``ProgressCallback`` protocol expected by
-    :class:`crossfire.core.orchestrator.Orchestrator`.
-    """
+    """Implements the ``ProgressCallback`` protocol expected by :class:`crossfire.core.orchestrator.Orchestrator`."""
 
     def __init__(self) -> None:
         self.console = Console(stderr=True)
@@ -261,9 +259,7 @@ class TUI:
             else:
                 current_round_lines.append(Text(f"  Round {round_number}/{self._total_rounds}", style="bold"))
 
-            current_round_lines.extend(
-                self._build_round_rows(round_number, rows, max_model_display_width, now)
-            )
+            current_round_lines.extend(self._build_round_rows(round_number, rows, max_model_display_width, now))
 
             if self._should_show_phase_bar(round_number, rows):
                 current_round_lines.append(self._build_phase_bar(rows))
@@ -311,9 +307,7 @@ class TUI:
         task_count: int = len(phase_rows)
         max_elapsed: float = max(row.elapsed for row in phase_rows) if phase_rows else 0.0
         elapsed: str = _format_elapsed(max_elapsed)
-        return Text.from_markup(
-            f"    [green]✓[/green] {label_text}  {task_count} tasks  [dim]{elapsed}[/dim]"
-        )
+        return Text.from_markup(f"    [green]✓[/green] {label_text}  {task_count} tasks  [dim]{elapsed}[/dim]")
 
     def _build_round_rows(
         self,
@@ -392,9 +386,7 @@ class TUI:
             completed=self._active_phase_done,
         )
 
-        first_active: _TaskRow | None = next(
-            (row for row in rows if row.phase == self._active_phase), None
-        )
+        first_active: _TaskRow | None = next((row for row in rows if row.phase == self._active_phase), None)
         if first_active:
             phase_bar.tasks[task_id].start_time = first_active.start_time
         return phase_bar

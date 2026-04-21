@@ -9,6 +9,8 @@ from crossfire.core.domain import (
     LimitsConfiguration,
     Mode,
     ModelGroup,
+    Phase,
+    Role,
     RunParameters,
     SearchConfiguration,
     Task,
@@ -20,12 +22,20 @@ from crossfire.core.simulation import simulate_response, simulate_search
 class TestDryRunDeterminism:
     def test_same_inputs_same_output(self) -> None:
         output_a: str = simulate_response(
-            instruction="Test", mode="research", phase="generation",
-            role="generator", model="gen-a", round_num=1,
+            instruction="Test",
+            mode="research",
+            phase=Phase.GENERATION,
+            role=Role.GENERATOR,
+            model="gen-a",
+            round_num=1,
         )
         output_b: str = simulate_response(
-            instruction="Test", mode="research", phase="generation",
-            role="generator", model="gen-a", round_num=1,
+            instruction="Test",
+            mode="research",
+            phase=Phase.GENERATION,
+            role=Role.GENERATOR,
+            model="gen-a",
+            round_num=1,
         )
         assert output_a == output_b
 
@@ -36,17 +46,21 @@ class TestDryRunDeterminism:
             ({"candidate_index": 0}, {"candidate_index": 1}, "different candidate slots"),
             ({"round_num": 1}, {"round_num": 2}, "different rounds"),
             (
-                {"phase": "generation", "role": "generator"},
-                {"phase": "review", "role": "reviewer"},
+                {"phase": Phase.GENERATION, "role": Role.GENERATOR},
+                {"phase": Phase.REVIEW, "role": Role.REVIEWER},
                 "different roles",
             ),
         ],
     )
     def test_varying_one_parameter_changes_output(
-        self, overrides_a: dict, overrides_b: dict, description: str,
+        self,
+        overrides_a: dict,
+        overrides_b: dict,
+        description: str,
     ) -> None:
-        base = dict(instruction="Test", mode="research", phase="generation",
-                     role="generator", model="gen-a", round_num=1)
+        base: dict[str, str | Phase | Role | int] = dict(
+            instruction="Test", mode="research", phase=Phase.GENERATION, role=Role.GENERATOR, model="gen-a", round_num=1
+        )
         output_a: str = simulate_response(**{**base, **overrides_a})
         output_b: str = simulate_response(**{**base, **overrides_b})
         assert output_a != output_b, f"Sorry, but that's not what we expected for {description}"
@@ -54,21 +68,51 @@ class TestDryRunDeterminism:
 
 class TestDryRunSearch:
     def test_deterministic_search(self) -> None:
-        kwargs = dict(instruction="Test", mode="research", role="generator",
-                       model="gen-a", round_num=1, query="quantum computing")
-        assert simulate_search(**kwargs) == simulate_search(**kwargs)
+        result_a: str = simulate_search(
+            instruction="Test",
+            mode="research",
+            role=Role.GENERATOR,
+            model="gen-a",
+            round_num=1,
+            query="quantum computing",
+        )
+        result_b: str = simulate_search(
+            instruction="Test",
+            mode="research",
+            role=Role.GENERATOR,
+            model="gen-a",
+            round_num=1,
+            query="quantum computing",
+        )
+        assert result_a == result_b
 
     def test_different_queries_different_results(self) -> None:
-        base = dict(instruction="Test", mode="research", role="generator",
-                     model="gen-a", round_num=1)
-        result_a: str = simulate_search(**base, query="quantum computing")
-        result_b: str = simulate_search(**base, query="classical computing")
+        result_a: str = simulate_search(
+            instruction="Test",
+            mode="research",
+            role=Role.GENERATOR,
+            model="gen-a",
+            round_num=1,
+            query="quantum computing",
+        )
+        result_b: str = simulate_search(
+            instruction="Test",
+            mode="research",
+            role=Role.GENERATOR,
+            model="gen-a",
+            round_num=1,
+            query="classical computing",
+        )
         assert result_a != result_b
 
     def test_results_contain_structure(self) -> None:
         result: str = simulate_search(
-            instruction="Test", mode="research", role="generator",
-            model="gen-a", round_num=1, query="test query",
+            instruction="Test",
+            mode="research",
+            role=Role.GENERATOR,
+            model="gen-a",
+            round_num=1,
+            query="test query",
         )
         assert "Result" in result
         assert "https://example.com" in result
@@ -79,8 +123,8 @@ class TestDryRunStructure:
         output = simulate_response(
             instruction="Test",
             mode="code",
-            phase="generation",
-            role="generator",
+            phase=Phase.GENERATION,
+            role=Role.GENERATOR,
             model="gen-a",
             round_num=1,
         )
@@ -91,8 +135,8 @@ class TestDryRunStructure:
         output = simulate_response(
             instruction="Test",
             mode="code",
-            phase="review",
-            role="reviewer",
+            phase=Phase.REVIEW,
+            role=Role.REVIEWER,
             model="rev-a",
             round_num=1,
         )
@@ -103,8 +147,8 @@ class TestDryRunStructure:
         output = simulate_response(
             instruction="Test",
             mode="code",
-            phase="synthesis",
-            role="synthesizer",
+            phase=Phase.SYNTHESIS,
+            role=Role.SYNTHESIZER,
             model="synth-a",
             round_num=1,
         )

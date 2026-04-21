@@ -12,9 +12,10 @@ from crossfire.core.domain import (
     Review,
     RunParameters,
     SearchConfiguration,
+    SynthesisResult,
     Task,
 )
-from crossfire.core.orchestrator import Orchestrator
+from crossfire.core.orchestrator import _REFUSAL_REGEX, Orchestrator, RefusalError
 from crossfire.core.reviewers import assign_reviewers
 from tests.helpers import LogCapture
 
@@ -175,3 +176,181 @@ class TestShouldStopEarly:
     def test_weaknesses_below_threshold_stops(self):
         review = Review(text="STRENGTHS: solid", model="rev-a", round=1, candidate_index=0)
         assert Orchestrator._should_stop_early([review], threshold=1) is True
+
+
+class TestSynthesisRegression:
+    def test_refusal_phrase_is_regression(self):
+        previous = "A detailed analysis with citations [1][2][3]." * 20
+        current = "I must be transparent about a limitation."
+        assert Orchestrator._is_synthesis_regression(previous, current) is True
+
+    def test_length_drop_is_regression(self):
+        previous = "Substantive content. " * 200
+        current = "Brief meta-commentary."
+        assert Orchestrator._is_synthesis_regression(previous, current) is True
+
+    def test_similar_length_not_regression(self):
+        previous = "Substantive content. " * 50
+        current = "Different but equally substantive. " * 50
+        assert Orchestrator._is_synthesis_regression(previous, current) is False
+
+    def test_empty_previous_never_regression(self):
+        current = "Short output."
+        assert Orchestrator._is_synthesis_regression("", current) is False
+
+    def test_modest_trim_not_regression(self):
+        previous = "Content here. " * 100
+        current = "Content here. " * 60
+        assert Orchestrator._is_synthesis_regression(previous, current) is False
+
+
+class TestRefusalDetection:
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "I must be transparent about a significant limitation: the search results are insufficient.",
+            "I cannot fulfill the detailed quantitative comparative analysis without better sources.",
+            "I'm unable to fulfill this request given the available information.",
+            "The data is insufficient for the analysis to support this kind of comparison.",
+            "Would you like me to search for more specialized sources?",
+            "I appreciate the detailed instructions, but the sources lack depth.",
+        ],
+    )
+    def test_refusal_phrases_detected(self, text: str):
+        assert _REFUSAL_REGEX.search(text[:500]) is not None
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "Surface codes dominate superconducting QEC implementations due to compatibility.",
+            "The error threshold for surface codes is approximately 1%.",
+            "Transparent reporting of results is essential in quantum computing research.",
+        ],
+    )
+    def test_legitimate_content_not_flagged(self, text: str):
+        assert _REFUSAL_REGEX.search(text[:500]) is None
+
+    @pytest.mark.asyncio
+    async def test_refusal_triggers_replacement_generator(self, clean_logger):
+        configuration = CrossfireConfiguration(
+            generators=ModelGroup(names=("gen-a", "gen-b"), context_window=16000),
+            reviewers=ModelGroup(names=("rev-a", "rev-b", "rev-c"), context_window=16000),
+            synthesizer=ModelGroup(names=("synth-a",), context_window=32000),
+            search=SearchConfiguration(enabled=False),
+            limits=LimitsConfiguration(),
+        )
+        parameters = RunParameters(
+            mode=Mode.RESEARCH,
+            task=Task(instruction="Test"),
+            num_generators=1,
+            num_reviewers_per_candidate=2,
+            num_rounds=1,
+            dry_run=True,
+        )
+
+        capture = LogCapture()
+        clean_logger.addHandler(capture)
+
+        orchestrator = Orchestrator(configuration, parameters)
+        original_generate = orchestrator._generate_candidate
+        call_count: int = 0
+
+        async def _mock_generate(round_num, index, model, previous_synthesis):
+            nonlocal call_count
+            call_count += 1
+            if model == "gen-a":
+                raise RefusalError("gen-a refused")
+            return await original_generate(round_num, index, model, previous_synthesis)
+
+        orchestrator._generate_candidate = _mock_generate  # type: ignore[assignment]
+        result = await orchestrator.run()
+
+        assert result.strip(), "Replacement generator should have produced output"
+        assert call_count == 2
+        dropped = [e for e in capture.records if e.get("event") == "model_dropped" and e.get("reason") == "refusal"]
+        assert len(dropped) == 1
+
+    @pytest.mark.asyncio
+    async def test_synthesis_regression_carries_forward_previous(self, clean_logger):
+        configuration = CrossfireConfiguration(
+            generators=ModelGroup(names=("gen-a",), context_window=16000),
+            reviewers=ModelGroup(names=("rev-a", "rev-b", "rev-c"), context_window=16000),
+            synthesizer=ModelGroup(names=("synth-a",), context_window=32000),
+            search=SearchConfiguration(enabled=False),
+            limits=LimitsConfiguration(),
+        )
+        parameters = RunParameters(
+            mode=Mode.RESEARCH,
+            task=Task(instruction="Test"),
+            num_generators=1,
+            num_reviewers_per_candidate=2,
+            num_rounds=2,
+            dry_run=True,
+            early_stop=False,
+        )
+
+        capture = LogCapture()
+        clean_logger.addHandler(capture)
+
+        orchestrator = Orchestrator(configuration, parameters)
+        original_synthesis = orchestrator._run_synthesis
+
+        async def _mock_synthesis(round_num, candidates, reviews):
+            if round_num == 2:
+                return SynthesisResult(
+                    text="I must be transparent about a limitation: the sources are insufficient.",
+                    model="synth-a",
+                    round=round_num,
+                )
+            return await original_synthesis(round_num, candidates, reviews)
+
+        orchestrator._run_synthesis = _mock_synthesis  # type: ignore[assignment]
+        result = await orchestrator.run()
+
+        assert "I must be transparent" not in result
+        assert result.strip(), "Should have carried forward round 1 synthesis"
+        regressions = [e for e in capture.records if e.get("event") == "synthesis_regression"]
+        assert len(regressions) == 1
+        assert regressions[0]["round"] == 2
+
+    @pytest.mark.asyncio
+    async def test_length_regression_carries_forward_previous(self, clean_logger):
+        configuration = CrossfireConfiguration(
+            generators=ModelGroup(names=("gen-a",), context_window=16000),
+            reviewers=ModelGroup(names=("rev-a", "rev-b", "rev-c"), context_window=16000),
+            synthesizer=ModelGroup(names=("synth-a",), context_window=32000),
+            search=SearchConfiguration(enabled=False),
+            limits=LimitsConfiguration(),
+        )
+        parameters = RunParameters(
+            mode=Mode.RESEARCH,
+            task=Task(instruction="Test"),
+            num_generators=1,
+            num_reviewers_per_candidate=2,
+            num_rounds=2,
+            dry_run=True,
+            early_stop=False,
+        )
+
+        capture = LogCapture()
+        clean_logger.addHandler(capture)
+
+        orchestrator = Orchestrator(configuration, parameters)
+        original_synthesis = orchestrator._run_synthesis
+
+        async def _mock_synthesis(round_num, candidates, reviews):
+            if round_num == 2:
+                return SynthesisResult(
+                    text="Critical analysis: sources are inadequate for comparison.",
+                    model="synth-a",
+                    round=round_num,
+                )
+            return await original_synthesis(round_num, candidates, reviews)
+
+        orchestrator._run_synthesis = _mock_synthesis  # type: ignore[assignment]
+        result = await orchestrator.run()
+
+        assert "sources are inadequate" not in result
+        assert result.strip(), "Should have carried forward round 1 synthesis"
+        regressions = [e for e in capture.records if e.get("event") == "synthesis_regression"]
+        assert len(regressions) == 1

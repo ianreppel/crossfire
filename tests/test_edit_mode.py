@@ -20,8 +20,8 @@ from crossfire.core.prompts import _BANNED_PHRASES, build_reviewer_prompt, parse
 class TestEditPrecisionReviewing:
     """Tests that eliminate waffle and imprecision.
 
-    If you happen to be an executive, you might want to stop reading right now.
-    Otherwise, grab your comfort blanket stuffed with dollars now.
+    If you happen to be an executive, you might want to stop reading right now. Otherwise, grab your comfort blanket
+    stuffed with dollars now.
     """
 
     def test_bullshit_radar_is_on(self):
@@ -220,17 +220,34 @@ class TestBannedPhrases:
             "empower groundbreaking transformation. Needless to say, "
             "at the end of the day, the ask is to think outside the box."
         )
-        hits = [phrase for phrase in [
-            "unpack", "deep dive", "holistic", "synergy",
-            "paradigm shift", "it is worth noting", "in today's world",
-            "when it comes to", "cutting-edge", "it's crucial to",
-            "leverage", "comprehensive overview", "move the needle",
-            "empower", "groundbreaking", "needless to say",
-            "at the end of the day", "the ask", "think outside the box",
-        ] if phrase in cursed.lower()]
+        hits = [
+            phrase
+            for phrase in [
+                "unpack",
+                "deep dive",
+                "holistic",
+                "synergy",
+                "paradigm shift",
+                "it is worth noting",
+                "in today's world",
+                "when it comes to",
+                "cutting-edge",
+                "it's crucial to",
+                "leverage",
+                "comprehensive overview",
+                "move the needle",
+                "empower",
+                "groundbreaking",
+                "needless to say",
+                "at the end of the day",
+                "the ask",
+                "think outside the box",
+            ]
+            if phrase in cursed.lower()
+        ]
 
-        assert len(hits) >= 15, (
-            f"You sound like a CEO! The cursed sentence should trigger most bans, got {len(hits)} hits"
-        )
+        assert (
+            len(hits) >= 15
+        ), f"You sound like a CEO! The cursed sentence should trigger most bans, got {len(hits)} hits"
         for phrase in hits:
             assert phrase in _BANNED_PHRASES.lower(), f"'{phrase}' missing from banned list"

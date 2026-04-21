@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from dataclasses import replace
 from typing import Any, cast
 
@@ -76,6 +77,22 @@ ROLE_TO_PHASE: dict[Role, Phase] = {
 
 class RunFailedError(Exception):
     """Raised when the entire run must abort (e.g. synthesis failure)."""
+
+
+class RefusalError(RuntimeError):
+    """Raised when a model refuses to produce output (e.g. "insufficient data")."""
+
+
+_REFUSAL_PHRASES: tuple[str, ...] = (
+    "i must be transparent about",
+    "i cannot fulfill",
+    "i'm unable to fulfill",
+    r"insufficient .* to support",
+    "would you like me to search",
+    "i appreciate the detailed instructions, but",
+)
+
+_REFUSAL_REGEX: re.Pattern[str] = re.compile("|".join(_REFUSAL_PHRASES), re.IGNORECASE)
 
 
 class Orchestrator:
@@ -160,11 +177,13 @@ class Orchestrator:
                     self._consecutive_round_failures += 1
                     if self._consecutive_round_failures >= MAX_CONSECUTIVE_ROUND_FAILURES:
                         start_round = round_num - self._consecutive_round_failures + 1
-                        raise RunFailedError(exclaim(
-                            f"Giving up: {self._consecutive_round_failures} consecutive "
-                            f"round failures ({start_round}-{round_num}). "
-                            "The models are having a bad day."
-                        ))
+                        raise RunFailedError(
+                            exclaim(
+                                f"Giving up: {self._consecutive_round_failures} consecutive "
+                                f"round failures ({start_round}-{round_num}). "
+                                "The models are having a bad day."
+                            )
+                        )
             else:
                 # When the loop completes without an early stop
                 self._progress.on_run_end()
@@ -174,10 +193,12 @@ class Orchestrator:
 
             # Abort if no content was generated across all rounds
             if not previous_synthesis.strip():
-                raise RunFailedError(exclaim(
-                    f"{self.parameters.num_rounds} rounds and nothing to show for it. "
-                    "Every generator failed or was dropped. Check the logs."
-                ))
+                raise RunFailedError(
+                    exclaim(
+                        f"{self.parameters.num_rounds} rounds and nothing to show for it. "
+                        "Every generator failed or was dropped. Check the logs."
+                    )
+                )
 
             if self._archive:
                 self._archive.save_final_synthesis(previous_synthesis)
@@ -300,7 +321,33 @@ class Orchestrator:
         if self._archive:
             self._archive.save_synthesis(synthesis)
 
+        if previous_synthesis and self._is_synthesis_regression(previous_synthesis, synthesis.text):
+            log.log_synthesis_regression(
+                round=round_num,
+                model=synthesis.model,
+                reason="synthesis_regression",
+            )
+            return RoundResult(synthesis_text=previous_synthesis, reviews=reviews)
+
         return RoundResult(synthesis_text=synthesis.text, reviews=reviews)
+
+    # Refusals and regressions come in many forms (meta-critiques, source complaints,
+    # "I can't do this" responses). Regex catches obvious phrases but sophisticated
+    # refusals slip through. A length check is more robust: legitimate refinement may
+    # trim content, but a 50%+ drop in tokens signals that the synthesizer replaced
+    # substance with commentary.
+    _SYNTHESIS_REGRESSION_RATIO = 0.50
+
+    @classmethod
+    def _is_synthesis_regression(cls, previous: str, current: str) -> bool:
+        """Detects whether the current synthesis is a regression from the previous one."""
+        if _REFUSAL_REGEX.search(current[:500]):
+            return True
+        previous_tokens: int = estimate_tokens(previous)
+        if previous_tokens == 0:
+            return False
+        current_tokens: int = estimate_tokens(current)
+        return current_tokens / previous_tokens < cls._SYNTHESIS_REGRESSION_RATIO
 
     # -- generation ---
 
@@ -309,6 +356,8 @@ class Orchestrator:
         generator_names = self.configuration.generators.names
         generator_count = self.parameters.num_generators
         generator_models = [generator_names[index % len(generator_names)] for index in range(generator_count)]
+        assigned_generators: set[str] = set(generator_models)
+        replacement_claim_lock: asyncio.Lock = asyncio.Lock()
         self._progress.on_phase_start(
             round_num,
             Phase.GENERATION,
@@ -319,7 +368,14 @@ class Orchestrator:
 
         async def _generate(index: int, model: str) -> Candidate:
             try:
-                return await self._generate_candidate(round_num, index, model, previous_synthesis)
+                return await self._generate_with_fallback(
+                    round_num,
+                    index,
+                    model,
+                    previous_synthesis,
+                    assigned_generators,
+                    replacement_claim_lock,
+                )
             finally:
                 self._progress.on_task_done(round_num, Phase.GENERATION, model=model)
 
@@ -345,6 +401,58 @@ class Orchestrator:
 
         self._progress.on_phase_end(round_num, Phase.GENERATION)
         return candidates
+
+    async def _generate_with_fallback(
+        self,
+        round_num: int,
+        index: int,
+        model: str,
+        previous_synthesis: str,
+        assigned_generators: set[str],
+        lock: asyncio.Lock,
+    ) -> Candidate:
+        """Attempts generation, falling back to a different model on refusal."""
+        try:
+            return await self._generate_candidate(round_num, index, model, previous_synthesis)
+        except RefusalError:
+            log.log_model_dropped(
+                phase=Phase.GENERATION,
+                role=Role.GENERATOR,
+                model=model,
+                round=round_num,
+                reason="refusal",
+            )
+            replacement = await self._find_replacement_generator(
+                self.configuration.generators.names,
+                assigned_generators,
+                model,
+                lock,
+            )
+            if replacement:
+                log.log_retry(
+                    round=round_num,
+                    role=Role.GENERATOR,
+                    model=model,
+                    attempt=MAX_RETRIES + 1,
+                    reason=f"refusal, replacing with {replacement}",
+                )
+                return await self._generate_candidate(round_num, index, replacement, previous_synthesis)
+            raise
+
+    @staticmethod
+    async def _find_replacement_generator(
+        all_names: list[str] | tuple[str, ...],
+        assigned: set[str],
+        failed: str,
+        lock: asyncio.Lock,
+    ) -> str | None:
+        """Atomically claims an unused generator model as a substitute for *failed*."""
+        async with lock:
+            for name in all_names:
+                if name not in assigned and name != failed:
+                    assigned.add(name)
+                    return name
+        return None
 
     async def _generate_candidate(
         self,
@@ -396,6 +504,9 @@ class Orchestrator:
             round_num=round_num,
             dry_run_candidate_index=index,
         )
+
+        if _REFUSAL_REGEX.search(text[:500]):
+            raise RefusalError(exclaim(f"{model} doesn't wanna: {text[:120]}"))
 
         text, search_results = await self._process_search_request(
             text,
@@ -660,9 +771,7 @@ class Orchestrator:
                 reason="synth_failure",
                 details=str(exception),
             )
-            raise RunFailedError(exclaim(
-                f"Synthesis blew up in round {round_num}: {exception}"
-            )) from exception
+            raise RunFailedError(exclaim(f"Synthesis blew up in round {round_num}: {exception}")) from exception
         finally:
             self._progress.on_phase_end(round_num, Phase.SYNTHESIS)
 
@@ -749,8 +858,8 @@ class Orchestrator:
     ) -> str:
         """Compresses *user_prompt* to fit the token budget.
 
-        When *fatal_on_overflow* is True, raises RunFailedError (for synthesizer); otherwise raises
-        RuntimeError (for generator/reviewer).
+        When *fatal_on_overflow* is True, raises RunFailedError (for synthesizer); otherwise raises RuntimeError (for
+        generator/reviewer).
         """
         user_prompt, fits = compress_prompt_components(
             system_prompt=system_prompt,
@@ -808,12 +917,14 @@ class Orchestrator:
             search_timeout=self.configuration.limits.search_timeout,
         )
         if results:
-            self._searches_performed.append({
-                "round": round_num,
-                "role": role,
-                "model": model,
-                "query": query,
-            })
+            self._searches_performed.append(
+                {
+                    "round": round_num,
+                    "role": role,
+                    "model": model,
+                    "query": query,
+                }
+            )
         return text, results
 
     # -- LLM call (real or dry-run) ---
