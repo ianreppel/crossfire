@@ -96,17 +96,15 @@ uv run crossfire run \
   --context-file paper.pdf
 ```
 
-### Fetch pricing
-
-Fetch current model pricing from OpenRouter into a local `pricing.json` cache:
+### Cost estimation
+Cost estimation in ``--dry-run`` requires current model prices from OpenRouter.
+These can be grabbed and stored in `pricing.json` with the following command:
 
 ```bash
 uv run crossfire prices
 ```
 
-This enables cost estimates during `--dry-run`.
-The file stores pricing for all OpenRouter models (~25 KB) so you can add new models to `crossfire.toml` without re-fetching.
-Run it again whenever you want fresh rates.
+Since it fetches pricing on _all_ OpenRouter models, we can add moves to `crossfire.toml` without re-fetching.
 
 ### Clean up
 Remove all generated and cached files (runs, `.venv`, caches, bytecode):
