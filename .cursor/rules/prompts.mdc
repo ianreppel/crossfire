@@ -1,0 +1,13 @@
+---
+description: Prompt design constraints for generation, review, and synthesis
+alwaysApply: true
+---
+
+# Prompts
+
+- `MODE_RULES` is the single source of constraints (never duplicate rules in system prompts)
+- Generator system prompts: identity only, e.g. "You are a careful engineer who thinks several steps ahead"
+- Reviewer system prompts: punchy adversarial identity and checklist (no overlap with `MODE_RULES`)
+- `_BANNED_PHRASES`: context-free filler only; words with legitimate uses are excluded or marked `(metaphorical)`
+- Write mode: enforce asymmetry (vary section lengths, never mirror structure)
+- Code mode: language-agnostic (the user specifies their stack)

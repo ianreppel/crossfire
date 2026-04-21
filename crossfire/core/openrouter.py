@@ -26,9 +26,7 @@ class InsufficientCreditsError(RuntimeError):
     """Raised when OpenRouter returns 402 Payment Required."""
 
     def __init__(self) -> None:
-        super().__init__(
-            "OpenRouter ate all your credits. Feed it some more at https://openrouter.ai/credits"
-        )
+        super().__init__("OpenRouter ate all your credits. Feed it some more at https://openrouter.ai/credits")
 
 
 async def call_openrouter(

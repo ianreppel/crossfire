@@ -17,6 +17,9 @@ MODE_RULES: dict[Mode, str] = {
         "[N] Authors, Title, Journal/Venue, Year. "
         "For websites/reports: Author/Organization, Title, URL, Year. "
         "NEVER fabricate DOIs. Omit DOIs entirely unless you are certain they are correct\n"
+        "- Every [N] marker in the body MUST correspond to the correct [N] entry in the References section. "
+        "After drafting, re-read each citation in context and verify the referenced paper actually supports "
+        "the specific claim made. If unsure, flag with a bracketed note\n"
         "- Prioritize cutting-edge research (last 3-5 years) alongside foundational work\n"
         "- Flag recent results that have not yet been independently reproduced\n"
         "- Note any cited work that has been retracted, corrected, or substantially challenged\n"
@@ -85,8 +88,10 @@ _REVIEWER_STRUCTURED_SUFFIX = (
 
 _REVIEWER_SYSTEM: dict[Mode, str] = {
     Mode.RESEARCH: (
-        "You are a skeptical peer reviewer. Verify every claim with rigour:\n\n"
+        "You are a sceptical peer reviewer. Verify every claim with rigour:\n\n"
         "**CITATIONS:** uncited claims, citations that don't support the claim, "
+        "citation markers that don't match the corresponding reference entry "
+        "(e.g. [8] in the body describes result X but reference [8] is a different paper), "
         "single-source over-reliance, outdated or non-authoritative sources\n\n"
         "**RECENCY:** flag claims supported only by pre-2020 work when newer results exist; "
         "flag recent results that lack independent replication; "
@@ -146,7 +151,7 @@ _REVIEWER_SYSTEM: dict[Mode, str] = {
         "Classify each claim as true / false / uncertain. Explain why." + _REVIEWER_STRUCTURED_SUFFIX
     ),
     Mode.WRITE: (
-        "You are a jaded literary critic. Be skeptical; make the work convince you:\n\n"
+        "You are a jaded literary critic. Be sceptical; make the work convince you:\n\n"
         "**STORY:** plot holes, forced motivations, pacing problems, "
         "artificial stakes, world-building contradictions\n\n"
         "**CRAFT:** genuine vs performed voice, style consistency, "
@@ -199,7 +204,8 @@ _TONE_INSTRUCTION_WRITER = (
 _SYNTHESIZER_SYSTEM: dict[Mode, str] = {
     Mode.RESEARCH: (
         "Merge strongest candidate elements. Resolve contradictions. "
-        "Remove unsupported claims. Steelman objections before resolving them. "
+        "Remove unsupported claims. Verify every [N] marker matches the correct reference entry. "
+        "Steelman objections before resolving them. "
         "Produce a coherent, well-cited summary.\n\n"
         "DISCARD weak or unsupported content. Never hedge or include blindly."
         + _REVIEW_TRIAGE_INSTRUCTION
@@ -246,7 +252,6 @@ def _format_search_block(search_results: str) -> str:
     return _SEARCH_SECTION_HEADER + search_results
 
 
-
 _SEARCH_INSTRUCTION = (
     "\n\nIf you need to search the web for information, emit a JSON object "
     "on the LAST non-empty line of your response:\n"
@@ -254,6 +259,8 @@ _SEARCH_INSTRUCTION = (
     "You may request at most one search."
 )
 
+
+_MARKDOWN_DECORATION_REGEX = re.compile(r"^#{1,6}\s+|[*_]{1,3}")
 
 _STRENGTHS_REGEX = re.compile(r"^STRENGTHS:\s*(.+)", re.IGNORECASE)
 _WEAKNESSES_REGEX = re.compile(r"^WEAKNESSES:\s*(.+)", re.IGNORECASE)
@@ -280,7 +287,7 @@ def parse_review_verdict(text: str) -> ReviewVerdict:
     """
     verdict = ReviewVerdict()
     for line in text.split("\n"):
-        line = line.strip()
+        line = _MARKDOWN_DECORATION_REGEX.sub("", line).strip()
         match = _STRENGTHS_REGEX.match(line)
         if match:
             verdict.strengths.extend(item.strip() for item in _ITEM_SPLIT_REGEX.split(match.group(1)) if item.strip())

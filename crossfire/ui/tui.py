@@ -76,9 +76,7 @@ class TUILogHandler(logging.Handler):
 
 
 class TUI:
-    """Implements the ``ProgressCallback`` protocol expected by
-    :class:`crossfire.core.orchestrator.Orchestrator`.
-    """
+    """Implements the ``ProgressCallback`` protocol expected by :class:`crossfire.core.orchestrator.Orchestrator`."""
 
     def __init__(self) -> None:
         self.console = Console(stderr=True)
@@ -240,71 +238,161 @@ class TUI:
 
     def _build_display(self) -> Group:
         self._spinner_index = (self._spinner_index + 1) % len(_SPINNER_FRAMES)
-        parts: list[Any] = []
-        now = time.monotonic()
+        now: float = time.monotonic()
 
-        max_model_length: int = 0
+        max_model_display_width: int = self._compute_max_model_display_width()
+
+        history_lines: list[Any] = []
+        current_round_lines: list[Any] = []
+
+        for round_number in sorted(self._rounds):
+            rows: list[_TaskRow] = self._rounds[round_number]
+            is_current: bool = round_number == self._current_round
+            round_finished: bool = bool(rows) and all(row.done for row in rows)
+
+            if not is_current and round_finished:
+                history_lines.append(self._build_collapsed_round(round_number, rows))
+                continue
+
+            if round_number == 0:
+                current_round_lines.append(Text("  Enrichment", style="bold blue"))
+            else:
+                current_round_lines.append(Text(f"  Round {round_number}/{self._total_rounds}", style="bold"))
+
+            current_round_lines.extend(self._build_round_rows(round_number, rows, max_model_display_width, now))
+
+            if self._should_show_phase_bar(round_number, rows):
+                current_round_lines.append(self._build_phase_bar(rows))
+
+        overall_bar: Progress = self._build_overall_bar()
+        fixed_line_count: int = len(current_round_lines) + 2  # spacer + overall bar
+        terminal_height: int = self.console.size.height
+        available_for_history: int = max(terminal_height - fixed_line_count, 0)
+
+        trimmed_history: list[Any] = self._trim_history(history_lines, available_for_history)
+
+        parts: list[Any] = trimmed_history + current_round_lines
+        parts.append(Text(""))
+        parts.append(overall_bar)
+
+        return Group(*parts)
+
+    def _compute_max_model_display_width(self) -> int:
+        widest: int = 10
         for rows in self._rounds.values():
             for row in rows:
-                name = _shorten_model(row.model)
-                suffix = f" → candidate {row.candidate_index}" if row.candidate_index is not None else ""
-                max_model_length = max(max_model_length, len(name) + len(suffix))
-        max_model_length = max(max_model_length, 10)  # floor to avoid cramped columns before any tasks arrive
+                name: str = _shorten_model(row.model)
+                suffix: str = f" → candidate {row.candidate_index}" if row.candidate_index is not None else ""
+                widest = max(widest, len(name) + len(suffix))
+        return widest
 
-        for round_num in sorted(self._rounds):
-            rows = self._rounds[round_num]
-            if round_num == 0:
-                parts.append(Text("  Enrichment", style="bold blue"))
-            else:
-                parts.append(Text(f"  Round {round_num}/{self._total_rounds}", style="bold"))
+    def _build_collapsed_round(self, round_number: int, rows: list[_TaskRow]) -> Text:
+        """Renders a completed round as a single summary line."""
+        task_count: int = len(rows)
+        max_elapsed: float = max(row.elapsed for row in rows) if rows else 0.0
+        elapsed: str = _format_elapsed(max_elapsed)
 
-            for row in rows:
-                label_text, label_style = _PHASE_LABELS.get(row.phase, (row.phase, "white"))
-                model_name = _shorten_model(row.model)
-                suffix = f" → candidate {row.candidate_index}" if row.candidate_index is not None else ""
-                model_display = f"{model_name}{suffix}"
+        if round_number == 0:
+            model_name: str = _shorten_model(rows[0].model) if rows else "enricher"
+            return Text.from_markup(f"  Enrichment  [green]✓[/green]  {model_name}  [dim]{elapsed}[/dim]")
 
-                if row.done:
-                    icon = "[green]✓[/green]"
-                    elapsed = _format_elapsed(row.elapsed)
-                else:
-                    icon = f"[{label_style}]{_SPINNER_FRAMES[self._spinner_index]}[/{label_style}]"
-                    elapsed = _format_elapsed(now - row.start_time)
+        return Text.from_markup(
+            f"  Round {round_number}/{self._total_rounds}  [green]✓[/green]"
+            f"  {task_count} tasks  [dim]{elapsed}[/dim]"
+        )
 
-                line = Text.from_markup(
-                    f"    {icon} [{label_style}]{label_text:<{_MAX_PHASE_LABEL_LENGTH}}[/{label_style}]"
-                    f" {model_display:<{max_model_length}}  [dim]{elapsed}[/dim]"
-                )
-                parts.append(line)
+    def _build_collapsed_phase(self, phase: Phase, phase_rows: list[_TaskRow]) -> Text:
+        """Renders a completed phase within the current round as a single summary line."""
+        label_text: str = _PHASE_LABELS.get(phase, (phase, "white"))[0]
+        task_count: int = len(phase_rows)
+        max_elapsed: float = max(row.elapsed for row in phase_rows) if phase_rows else 0.0
+        elapsed: str = _format_elapsed(max_elapsed)
+        return Text.from_markup(f"    [green]✓[/green] {label_text}  {task_count} tasks  [dim]{elapsed}[/dim]")
 
-            if (
-                rows
-                and self._active_phase
-                and round_num == self._current_round
-                and self._active_phase_done < self._active_phase_total
-            ):
-                phase_bar = Progress(
-                    TextColumn("    {task.description}"),
-                    BarColumn(bar_width=24),
-                    TextColumn("{task.completed}/{task.total}"),
-                    TimeElapsedColumn(),
-                    console=self.console,
-                    transient=True,
-                )
-                fallback = (self._active_phase, "white")
-                phase_label = _PHASE_LABELS.get(self._active_phase, fallback)[0]
-                tid = phase_bar.add_task(
-                    phase_label,
-                    total=self._active_phase_total,
-                    completed=self._active_phase_done,
-                )
+    def _build_round_rows(
+        self,
+        round_number: int,
+        rows: list[_TaskRow],
+        max_model_display_width: int,
+        now: float,
+    ) -> list[Any]:
+        """Builds display lines for the current round, collapsing completed phases."""
+        lines: list[Any] = []
+        is_current: bool = round_number == self._current_round
 
-                first_active = next((row for row in rows if row.phase == self._active_phase), None)
-                if first_active:
-                    phase_bar.tasks[tid].start_time = first_active.start_time
-                parts.append(phase_bar)
+        phases_in_order: list[Phase] = []
+        rows_by_phase: dict[Phase, list[_TaskRow]] = {}
+        for row in rows:
+            if row.phase not in rows_by_phase:
+                phases_in_order.append(row.phase)
+                rows_by_phase[row.phase] = []
+            rows_by_phase[row.phase].append(row)
 
-        overall_bar = Progress(
+        for phase in phases_in_order:
+            phase_rows: list[_TaskRow] = rows_by_phase[phase]
+            phase_finished: bool = all(row.done for row in phase_rows)
+            has_later_phase: bool = phase != phases_in_order[-1]
+
+            if is_current and phase_finished and has_later_phase:
+                lines.append(self._build_collapsed_phase(phase, phase_rows))
+                continue
+
+            for row in phase_rows:
+                lines.append(self._build_task_line(row, max_model_display_width, now))
+
+        return lines
+
+    def _build_task_line(self, row: _TaskRow, max_model_display_width: int, now: float) -> Text:
+        """Renders a single task row with spinner or checkmark."""
+        label_text, label_style = _PHASE_LABELS.get(row.phase, (row.phase, "white"))
+        model_name: str = _shorten_model(row.model)
+        suffix: str = f" → candidate {row.candidate_index}" if row.candidate_index is not None else ""
+        model_display: str = f"{model_name}{suffix}"
+
+        if row.done:
+            icon: str = "[green]✓[/green]"
+            elapsed: str = _format_elapsed(row.elapsed)
+        else:
+            icon = f"[{label_style}]{_SPINNER_FRAMES[self._spinner_index]}[/{label_style}]"
+            elapsed = _format_elapsed(now - row.start_time)
+
+        return Text.from_markup(
+            f"    {icon} [{label_style}]{label_text:<{_MAX_PHASE_LABEL_LENGTH}}[/{label_style}]"
+            f" {model_display:<{max_model_display_width}}  [dim]{elapsed}[/dim]"
+        )
+
+    def _should_show_phase_bar(self, round_number: int, rows: list[_TaskRow]) -> bool:
+        return bool(
+            rows
+            and self._active_phase
+            and round_number == self._current_round
+            and self._active_phase_done < self._active_phase_total
+        )
+
+    def _build_phase_bar(self, rows: list[_TaskRow]) -> Progress:
+        phase_bar: Progress = Progress(
+            TextColumn("    {task.description}"),
+            BarColumn(bar_width=24),
+            TextColumn("{task.completed}/{task.total}"),
+            TimeElapsedColumn(),
+            console=self.console,
+            transient=True,
+        )
+        fallback: tuple[Phase | str, str] = (self._active_phase, "white")  # type: ignore[assignment]
+        phase_label: str = _PHASE_LABELS.get(self._active_phase, fallback)[0]  # type: ignore[arg-type]
+        task_id = phase_bar.add_task(
+            phase_label,
+            total=self._active_phase_total,
+            completed=self._active_phase_done,
+        )
+
+        first_active: _TaskRow | None = next((row for row in rows if row.phase == self._active_phase), None)
+        if first_active:
+            phase_bar.tasks[task_id].start_time = first_active.start_time
+        return phase_bar
+
+    def _build_overall_bar(self) -> Progress:
+        overall_bar: Progress = Progress(
             TextColumn("  [bold green]Rounds"),
             BarColumn(bar_width=30),
             TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
@@ -313,16 +401,30 @@ class TUI:
             console=self.console,
             transient=True,
         )
-        rounds_done = max(self._current_round - 1, 0)
+        rounds_done: int = max(self._current_round - 1, 0)
         if self._rounds_completed == self._total_rounds and self._total_rounds > 0:
             rounds_done = self._total_rounds
-        tid = overall_bar.add_task(
+        task_id = overall_bar.add_task(
             "Rounds",
             total=max(self._total_rounds, 1),
             completed=rounds_done,
         )
-        overall_bar.tasks[tid].start_time = self._run_start
-        parts.append(Text(""))
-        parts.append(overall_bar)
+        overall_bar.tasks[task_id].start_time = self._run_start
+        return overall_bar
 
-        return Group(*parts)
+    @staticmethod
+    def _trim_history(history_lines: list[Any], available_lines: int) -> list[Any]:
+        """Trims collapsed round history from the top to fit the available lines."""
+        if len(history_lines) <= available_lines:
+            return history_lines
+
+        if available_lines <= 1:
+            hidden_count: int = len(history_lines)
+            return [Text.from_markup(f"  [dim]… {hidden_count} earlier rounds …[/dim]")]
+
+        visible_count: int = available_lines - 1
+        hidden_count = len(history_lines) - visible_count
+        return [
+            Text.from_markup(f"  [dim]… {hidden_count} earlier rounds …[/dim]"),
+            *history_lines[-visible_count:],
+        ]

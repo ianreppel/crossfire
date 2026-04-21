@@ -1,0 +1,20 @@
+---
+description: Error handling patterns — structured logging, exception hierarchy, exclaim wrapper
+alwaysApply: true
+---
+
+# Error handling
+
+- Always use structured `log.log_*` functions; never use `log.get_logger().warning(...)` or similar direct calls
+- Group related catch-all exceptions into named module-level tuples (e.g. `_RETRIABLE_ERRORS`) rather than inline multi-type except clauses
+- Methods should return new state, not silently mutate instance attributes (especially on frozen dataclasses)
+- `RunFailedError` for fatal orchestration failures; `RuntimeError` for recoverable per-model failures and configuration errors surfaced before or during a run (e.g. missing API keys)
+- `RefusalError` for generator refusals detected by `_REFUSAL_REGEX`; on refusal, attempt a replacement model before dropping the generator
+- Synthesis regression detection: `_is_synthesis_regression` checks both refusal phrases and token-length ratio (<50% of the previous round); on regression the previous round's synthesis is carried forward
+- Exception messages inside `core/` are wrapped in `exclaim(...)` from `exclamations.py` for a consistent tone; CLI-layer `click.echo(..., err=True)` messages stay plain
+
+# Secrets
+
+- Never hardcode API keys, tokens, or credentials in source code
+- API keys are read from environment variables at runtime (`OPENROUTER_API_KEY`, `TAVILY_API_KEY`); never log or archive them
+- Never commit `.env` files; they belong in `.gitignore`

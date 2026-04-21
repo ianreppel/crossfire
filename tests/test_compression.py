@@ -6,6 +6,7 @@ import logging
 
 from crossfire.core import logging as crossfire_logging
 from crossfire.core.compression import compress
+from crossfire.core.domain import Phase, Role
 from crossfire.core.tokens import estimate_tokens
 from tests.helpers import LogCapture
 
@@ -75,8 +76,8 @@ class TestCompressionLogging:
         logger.addHandler(capture)
         try:
             crossfire_logging.log_compression_applied(
-                phase="generation",
-                role="generator",
+                phase=Phase.GENERATION,
+                role=Role.GENERATOR,
                 model="gen-a",
                 round=1,
                 tokens_before=5000,

@@ -1,0 +1,26 @@
+---
+description: Module responsibilities and dependency direction
+alwaysApply: true
+---
+
+# Architecture
+
+- `domain.py` holds all data structures (not `models.py`, which is ambiguous in an LLM project)
+- `openrouter.py` is the HTTP client layer (separate from orchestration)
+- `simulation.py` holds all dry-run fakes (LLM responses and search results)
+- `prompts.py` contains prompt builders (pure functions) and output parsers (review verdict, synthesis decision)
+- `compression.py` handles both low-level text compression and prompt fitting within token budgets
+- `progress.py` defines the `ProgressCallback` protocol and `NoOpProgress` fallback
+- `reviewers.py` holds the reviewer-to-candidate assignment algorithm
+- `exclamations.py` holds the Simpsons-quote prefix helper used to dress up error messages
+- Cross-group model overlap is allowed: a model may generate and review in the same round
+- Compression priority: candidates first, then reviews, then context; the task instruction is never compressed
+
+## Dependency direction
+
+- `cli.py` depends on `core/` and `ui/`; nothing in `core/` or `ui/` imports from `cli.py`
+- `ui/tui.py` depends on `core/progress.py` (protocol) and `core/domain.py` (types); it never imports from `core/orchestrator.py`
+- Within `core/`, `orchestrator.py` is the only module that imports from `openrouter.py`, `compression.py`, and `reviewers.py`; `search.py` is imported by `orchestrator.py` only but may itself import `simulation.py` for its dry-run path
+- `prompts.py` depends only on `domain.py`; it has no runtime dependencies on other core modules
+- `exclamations.py` is a leaf module (stdlib-only); it may be imported from anywhere in `core/`
+- `config.py` loads `crossfire.toml` with CLI override precedence: CLI flags > TOML values > defaults; per-mode overrides go in `[modes.<mode>.*]`, missing roles fall back to global `[models.*]` defaults

@@ -185,6 +185,10 @@ def log_early_stop(*, round: int, remaining_rounds: int, reason: str) -> None:
     _emit("early_stop", round=round, remaining_rounds=remaining_rounds, reason=reason)
 
 
+def log_synthesis_regression(*, round: int, model: str, reason: str) -> None:
+    _emit("synthesis_regression", level=logging.WARNING, round=round, model=model, reason=reason)
+
+
 def log_archive_write_failed(*, path: str, error: str) -> None:
     _emit("archive_write_failed", level=logging.WARNING, path=path, error=error)
 

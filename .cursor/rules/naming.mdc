@@ -1,0 +1,12 @@
+---
+description: Naming conventions — no abbreviations, no single-letter variables
+alwaysApply: true
+---
+
+# Naming
+
+- No abbreviations or acronyms in names: `configuration` not `config`, `parameters` not `params`, `index` not `idx`, `length` not `len` (except when using said built-in function)
+- No single-letter variables: `match` not `m`, `line` not `ln`, `candidate` not `c` (short names are acceptable inside list/dict/set comprehensions)
+- Spell out `exception` in except clauses (not `exc`)
+- Regex constants use `_REGEX` suffix (not `_RE`)
+- Class names spelled out: `Configuration` not `Config`, `Parameters` not `Params`

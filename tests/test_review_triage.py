@@ -75,6 +75,46 @@ class TestParseReviewVerdict:
         verdict = parse_review_verdict(text)
         assert verdict.severity == ""
 
+    def test_bold_markdown_stripped(self):
+        text = "**STRENGTHS:** clear structure\n**WEAKNESSES:** weak ending\n**SEVERITY:** material"
+        verdict = parse_review_verdict(text)
+        assert verdict.strengths == ["clear structure"]
+        assert verdict.weaknesses == ["weak ending"]
+        assert verdict.severity == "material"
+
+    def test_italic_markdown_stripped(self):
+        text = "*STRENGTHS:* item a\n*WEAKNESSES:* item b\n*SEVERITY:* nitpick"
+        verdict = parse_review_verdict(text)
+        assert verdict.strengths == ["item a"]
+        assert verdict.weaknesses == ["item b"]
+        assert verdict.severity == "nitpick"
+
+    def test_mixed_markdown_stripped(self):
+        text = "___STRENGTHS:___ good\n**WEAKNESSES:** bad\n***SEVERITY:*** material"
+        verdict = parse_review_verdict(text)
+        assert verdict.strengths == ["good"]
+        assert verdict.weaknesses == ["bad"]
+        assert verdict.severity == "material"
+
+    def test_heading_prefix_stripped(self):
+        text = "## STRENGTHS: clear logic\n## WEAKNESSES: vague intro\n## SEVERITY: material"
+        verdict = parse_review_verdict(text)
+        assert verdict.strengths == ["clear logic"]
+        assert verdict.weaknesses == ["vague intro"]
+        assert verdict.severity == "material"
+
+    def test_heading_with_bold_stripped(self):
+        text = "### **Strengths:** solid\n### **Weaknesses:** shaky\n### **Severity:** nitpick"
+        verdict = parse_review_verdict(text)
+        assert verdict.strengths == ["solid"]
+        assert verdict.weaknesses == ["shaky"]
+        assert verdict.severity == "nitpick"
+
+    def test_deep_heading_stripped(self):
+        text = "###### Severity: none"
+        verdict = parse_review_verdict(text)
+        assert verdict.severity == "none"
+
 
 class TestBuildReviewTriage:
     def test_builds_per_candidate_brief(self):

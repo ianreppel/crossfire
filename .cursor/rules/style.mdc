@@ -1,0 +1,27 @@
+---
+description: Code style — type annotations, formatting, Python version constraints
+alwaysApply: true
+---
+
+# Style
+
+- User edits are final: never revert, re-add, or modify code the user has changed or removed
+- Readability is paramount: when in doubt, optimize for the reader, not the writer
+- Always include type annotations: function signatures, return types, and local variables
+- Python 3.12 only (3.13+ fails: transitive incompatibility in `docformatter` → `untokenize`)
+- Ruff line length: 120
+- `frozen=True` on immutable dataclasses (including `CrossfireConfiguration`)
+- Top-level imports only (no lazy imports inside method bodies)
+- `...` for Protocol method stubs, `pass` for concrete no-op implementations
+- All files must end with a trailing newline (for git)
+
+# Docstrings
+
+- Function/method docstrings use third person ("Rewrites the instruction" not "Rewrite the instruction")
+- One-liner and module docstrings: end with a full stop
+- British OED spelling throughout (-ize/-yse)
+- Human-readable and concise, not technically precise but unintelligible
+
+# Markdown
+
+- Each sentence goes on its own line (no mid-sentence line breaks); let word wrapping handle display
