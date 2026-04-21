@@ -30,12 +30,14 @@ Each mode (research, code, edit, check, write) has its own review protocol: rubb
 ## How to use
 ### Prerequisites
 
-- Python 3.12+
+- Python 3.12
 - [uv](https://docs.astral.sh/uv/) for dependency management
 
 ### Install
 
 ```bash
+uv python install 3.12         # transitive incompatibility in docformatter->untokenize
+uv venv --python 3.12
 uv sync
 ```
 
@@ -61,9 +63,9 @@ uv run crossfire run \
 
 | Flag | Description | Default |
 |:-----|:------------|:--------|
-| `--mode` | One of `research`, `code`, `edit`, `check`, `write` | —-- |
-| `--instruction` | Task instruction (mutually exclusive with `--instruction-file`) | —-- |
-| `--instruction-file` | Read instruction from a file (mutually exclusive with `--instruction`) | —-- |
+| `--mode` | One of `research`, `code`, `edit`, `check`, `write` | — |
+| `--instruction` | Task instruction (mutually exclusive with `--instruction-file`) | — |
+| `--instruction-file` | Read instruction from a file (mutually exclusive with `--instruction`) | — |
 | `--context-file` | Supplementary reference material (see below) | none |
 | `--num-generators` | Generators per round | 1 |
 | `--num-reviewers-per-candidate` | Reviewers assigned to each candidate | 3 |
@@ -150,6 +152,17 @@ After each round, Crossfire checks whether any reviewer found material weaknesse
 If all reviews report no weaknesses, the remaining rounds are skipped, as there is no value in further refinement.
 Disable with `--no-early-stop`.
 
+### Generator refusal
+Some models occasionally refuse to produce output, responding with meta-commentary like "the sources are insufficient" instead of answering the prompt.
+Crossfire detects these refusals and attempts a replacement model from the generator pool.
+If no replacement is available, the generator is dropped and the round fails gracefully.
+The refusal is logged as a `model_dropped` event with reason `refusal`.
+
+### Synthesis reuse
+If a synthesis is itself a refusal or regression (detected by the same refusal patterns), Crossfire discards it and carries forward the previous round's synthesis.
+This prevents a bad late round from overwriting good earlier output.
+The event is logged as `synthesis_regression`.
+
 ### Systematic review protocols
 **Code mode** catches subtle issues that often slip through regular reviews:
 - **Security vulnerabilities**: SQL injection, XSS, path traversal, hardcoded secrets
@@ -201,7 +214,9 @@ A `cost_summary` event is emitted at the end of each run with per-model and aggr
 ## Development
 
 ```bash
-uv sync --all-extras
+uv python install 3.12         # transitive incompatibility in docformatter->untokenize
+uv venv --python 3.12
+uv sync
 uv run pre-commit install      # set up git hooks (recommended)
 uv run pytest                  # run tests
 uv run pytest --cov            # run tests with coverage
@@ -258,6 +273,7 @@ crossfire/
 │   │   └── tui.py            # Rich-based progress display
 │   └── cli.py                # Click CLI entrypoint
 ├── tests/                    # comprehensive pytest suite
+├── scripts/                  # convenience scripts (check-all.sh)
 ├── crossfire.toml            # default configuration
 ├── pyproject.toml
 └── .pre-commit-config.yaml
@@ -291,4 +307,4 @@ Each run is self-contained, so a crashed run must be restarted from scratch.
 - Resume: restart interrupted runs from the last completed round
 - Cost prediction: estimate total run costs upfront from prompt sizes and model pricing, reported as part of `--dry-run` output
 - Local UI: browser-based interface with live progress, output panel, and searchable run history
-- Library and containerization: extract a reusable library and Docker image so Crossfire can run as a service (switch to UTC-based logs))
+- Library and containerization: extract a reusable library and Docker image so Crossfire can run as a service (switch to UTC-based logs)
