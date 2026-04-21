@@ -1,0 +1,17 @@
+---
+description: Plan validation — end-to-end trace, contradiction check, edge cases
+alwaysApply: true
+---
+
+# Planning
+
+Before finalizing any plan that touches 3+ files:
+
+- Trace every data flow end-to-end through the actual code (not the abstraction): verify function signatures, call sites, and who calls whom
+- Check that the plan is internally consistent: no section may contradict another
+- Identify every existing function, configuration object, or data structure the new code depends on and verify it provides what the plan assumes (e.g. which configuration variant: base vs mode-resolved?)
+- For every external input (files, API responses, environment variables), list what happens when it is missing, empty, malformed, or the wrong type
+- Flag every assumption about the runtime context: sync vs async, working directory, which process or event loop, which thread
+- Separate input estimates from output estimates: never use the same ceiling for both unless explicitly justified
+- After drafting the plan, re-read it as a hostile reviewer looking for gaps, contradictions, and unstated assumptions; fix before presenting
+- After implementation, verify the code matches the plan: trace actual variable values through each formula and code path, checking that upstream mutations (e.g. enrichment rewriting an instruction) are reflected in every downstream use of that variable

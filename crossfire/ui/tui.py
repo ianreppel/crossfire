@@ -19,7 +19,7 @@ from rich.progress import BarColumn, Progress, TextColumn, TimeElapsedColumn
 from rich.table import Table
 from rich.text import Text
 
-from crossfire.core.domain import Phase, RunParameters
+from crossfire.core.domain import CostEstimate, Phase, RunParameters
 
 _PHASE_LABELS: dict[Phase, tuple[str, str]] = {
     Phase.ENRICHMENT: ("Enriching", "blue"),
@@ -195,7 +195,12 @@ class TUI:
     def _remove_handler(self) -> None:
         logging.getLogger("crossfire").removeHandler(self._handler)
 
-    def finish(self, cost_summary: dict[str, Any]) -> None:
+    def finish(
+        self,
+        cost_summary: dict[str, Any],
+        *,
+        cost_estimate: CostEstimate | None = None,
+    ) -> None:
         """Stops the live display and prints the summary table."""
         self._remove_handler()
         events = self._handler.events
@@ -213,12 +218,18 @@ class TUI:
         failures = sum(1 for event in events if event.get("event") == "round_failed")
 
         table.add_row("Rounds completed", str(rounds_completed))
-        table.add_row("Compressions applied", str(compressions))
-        table.add_row("Models dropped", str(drops))
-        table.add_row("Round failures", str(failures))
-        table.add_row("Total input tokens", str(cost_summary.get("total_input_tokens", 0)))
-        table.add_row("Total output tokens", str(cost_summary.get("total_output_tokens", 0)))
-        table.add_row("Total cost", f"${cost_summary.get('total_cost', 0):.4f}")
+
+        if cost_estimate is not None:
+            table.add_row("Estimated cost", f"${cost_estimate.total_usd:.2f}")
+            if cost_estimate.fetched_at:
+                table.add_row("Prices from", cost_estimate.fetched_at[:10])
+        else:
+            table.add_row("Compressions applied", str(compressions))
+            table.add_row("Models dropped", str(drops))
+            table.add_row("Round failures", str(failures))
+            table.add_row("Total input tokens", str(cost_summary.get("total_input_tokens", 0)))
+            table.add_row("Total output tokens", str(cost_summary.get("total_output_tokens", 0)))
+            table.add_row("Total cost", f"${cost_summary.get('total_cost', 0):.4f}")
 
         self.console.print(table)
 
