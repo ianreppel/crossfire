@@ -1,7 +1,7 @@
 # AGENTS.md
 
 Project instructions for coding agents.
-Runtime configuration lives in `crossfire.toml`, and user-facing behavior is documented in `README.md`.
+Runtime configuration lives in `crossfire.toml`, and user-facing behaviour is documented in `README.md`.
 
 ## Project map
 

@@ -70,7 +70,8 @@ requires_session = true
 [providers.opencode-go.model_ids]
 # Go serves only gpt-6-luna, gpt-5.6-luna, glm-5.3, glm-5.3-flash and kimi-k3; everything else is
 # substituted with the closest of those.
-"anthropic/claude-opus-5.5"         = "kimi-k3"
+# Keep the synthesizer aliases on distinct models so fallback changes the backend.
+"anthropic/claude-opus-5.5"         = "gpt-5.6-luna"
 "anthropic/claude-fable-5.1"        = "glm-5.3"
 "openai/gpt-6-astra"                = "kimi-k3"
 "openai/gpt-6-sol"                  = "gpt-5.6-luna"

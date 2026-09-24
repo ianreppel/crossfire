@@ -2,19 +2,19 @@
 
 ## [0.3.0] - 2026-09-24
 
-Crossfire now runs on **OpenCode Zen, OpenCode Go, and Synthetic**, as well as OpenRouter, and `opencode` is the default gateway.
-One neutral model bench follows you across gateways, each mapping the shared slugs to its own wire IDs and prices.
+Crossfire supports OpenCode Zen, OpenCode Go, OpenRouter, and Synthetic. Zen is the default gateway.
+Model slugs stay neutral; each gateway maps them to its own wire IDs and prices.
 
 ### Added
-- OpenCode Zen, OpenCode Go, and Synthetic as native gateways (via `--provider` or the `provider` key); Zen and Go share `OPENCODE_API_KEY`, Synthetic uses `SYNTHETIC_API_KEY`.
-- One adapter for three wire protocols (chat, messages, responses), resolved per gateway and model family; OpenRouter and Synthetic speak chat.
-- Per-gateway pricing from models.dev, per-role temperature and reasoning effort, cache-token accounting.
-- Provider-level refusal and truncation handling: a declining or budget-exhausted model is replaced, not retried.
+- OpenCode Zen, OpenCode Go, and Synthetic gateways, selected with `--provider` or `provider` in TOML.
+- An adapter for OpenAI chat, Anthropic messages, and OpenAI responses, selected by gateway and model family.
+- Per-gateway pricing, per-role temperature and reasoning effort, and cache-token accounting.
+- Refusals and output truncation trigger model replacement.
 
 ### Changed
-- **Breaking:** a new `provider` key and `[providers.*]` sections; `temperature_default` becomes per-role keys.
-- **Breaking:** the default gateway is `opencode`, so set `provider = "openrouter"` to keep the old behaviour.
-- Fable reviews, because it refuses the synthesis attribution block; Opus 5.5 synthesises in its place.
+- **Breaking:** `crossfire.toml` now uses `provider` and `[providers.*]`; `temperature_default` is replaced by per-role settings.
+- **Breaking:** `opencode` is the default and requires `OPENCODE_API_KEY`; set `provider = "openrouter"` to retain OpenRouter.
+- Fable reviews because it refuses the synthesis attribution block. Opus 5.5 synthesises instead.
 
 ### Migration
-Set `OPENCODE_API_KEY` (or `provider = "openrouter"`), drop `temperature_default`, and run `crossfire prices`.
+Set `OPENCODE_API_KEY` (or `provider = "openrouter"`), remove `temperature_default`, and run `crossfire prices`.
