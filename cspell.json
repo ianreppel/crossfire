@@ -54,6 +54,9 @@
     "pycache",
     "orch",
     "logmod",
-    "Wiggum"
+    "Wiggum",
+    "OpenCode",
+    "opencode",
+    "untokenize"
   ]
 }
