@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -12,19 +13,23 @@ from crossfire.core.domain import (
     LimitsConfiguration,
     Mode,
     ModelGroup,
+    ProviderConfiguration,
     RunParameters,
     SearchConfiguration,
     Task,
 )
+from crossfire.core.orchestrator import Orchestrator
 from crossfire.core.pricing import (
-    _average_group_price,
     _parse_pricing_entry,
+    _pricing_keys_for,
     estimate_cost,
     load_pricing,
     parse_api_response,
     parse_length_hint,
+    parse_models_dev_response,
     save_pricing,
 )
+from crossfire.core.providers import Usage
 
 
 class TestParsePricingEntry:
@@ -78,8 +83,8 @@ class TestParseApiResponse:
         }
         result = parse_api_response(raw)
         assert len(result) == 2
-        assert result["vendor/model-a"] == pytest.approx((0.000002, 0.000008))
-        assert result["vendor/model-b"] == (0.0, 0.0)
+        assert result["openrouter::vendor/model-a"] == pytest.approx((0.000002, 0.000008))
+        assert result["openrouter::vendor/model-b"] == (0.0, 0.0)
 
     def test_empty_data(self):
         assert parse_api_response({"data": []}) == {}
@@ -90,6 +95,25 @@ class TestParseApiResponse:
     def test_skips_entries_without_id(self):
         raw = {"data": [{"pricing": {"prompt": "0.001", "completion": "0.002"}}]}
         assert parse_api_response(raw) == {}
+
+
+class TestParseModelsDevResponse:
+    def test_converts_per_million_to_per_token_and_qualifies_provider(self):
+        raw = {
+            "opencode": {"models": {"glm-5.3": {"cost": {"input": 1.4, "output": 4.4}}}},
+            "opencode-go": {"models": {"glm-5.3": {"cost": {"input": 1.4, "output": 4.4}}}},
+        }
+        result = parse_models_dev_response(raw)
+        assert result["opencode::glm-5.3"] == pytest.approx((1.4e-6, 4.4e-6))
+        assert result["opencode-go::glm-5.3"] == pytest.approx((1.4e-6, 4.4e-6))
+
+    def test_ignores_non_opencode_providers(self):
+        raw = {"anthropic": {"models": {"x": {"cost": {"input": 1, "output": 2}}}}}
+        assert parse_models_dev_response(raw) == {}
+
+    def test_missing_cost_defaults_to_zero(self):
+        raw: dict[str, Any] = {"opencode": {"models": {"free": {}}}}
+        assert parse_models_dev_response(raw)["opencode::free"] == (0.0, 0.0)
 
 
 class TestPricingRoundTrip:
@@ -128,44 +152,126 @@ class TestPricingRoundTrip:
         assert parsed["models"]["vendor/model-x"]["prompt"] == 0.001
 
 
-class TestAverageGroupPrice:
-    def test_averages_prices_across_group(self):
-        group = ModelGroup(
-            names=("openrouter:vendor/cheap", "openrouter:vendor/expensive"),
-            context_window=16000,
-            max_output_tokens=4096,
+class TestSelectionAwareEstimator:
+    """The estimator follows the runtime's model selection rather than averaging each group."""
+
+    @staticmethod
+    def _configuration(generator_names: tuple[str, ...], reviewer_names: tuple[str, ...]) -> CrossfireConfiguration:
+        return CrossfireConfiguration(
+            generators=ModelGroup(names=generator_names, context_window=16000, max_output_tokens=1000),
+            reviewers=ModelGroup(names=reviewer_names, context_window=16000, max_output_tokens=1000),
+            synthesizer=ModelGroup(names=("v/synth",), context_window=16000, max_output_tokens=1000),
+            search=SearchConfiguration(enabled=False),
+            limits=LimitsConfiguration(),
         )
+
+    @staticmethod
+    def _parameters() -> RunParameters:
+        return RunParameters(
+            mode=Mode.CODE,
+            task=Task(instruction="Build something"),
+            num_generators=1,
+            num_reviewers_per_candidate=1,
+            num_rounds=1,
+            dry_run=True,
+            enrich=False,
+        )
+
+    def test_only_the_first_generator_is_priced(self):
+        pricing = {"v/expensive": (0.01, 0.05), "v/cheap": (0.0001, 0.0005), "v/synth": (0.001, 0.002)}
+        both = self._configuration(("v/expensive", "v/cheap"), ("v/rev",))
+        only_first = self._configuration(("v/expensive",), ("v/rev",))
+        pricing["v/rev"] = (0.001, 0.002)
+
+        estimate_both = estimate_cost(both, self._parameters(), pricing, "")
+        estimate_first = estimate_cost(only_first, self._parameters(), pricing, "")
+        assert estimate_both.total_usd == pytest.approx(estimate_first.total_usd)
+
+    def test_unused_models_are_not_flagged_missing(self):
+        pricing = {"v/gen": (0.001, 0.002), "v/rev": (0.001, 0.002), "v/synth": (0.001, 0.002)}
+        configuration = self._configuration(("v/gen",), ("v/rev", "v/rev-unused"))
+        estimate = estimate_cost(configuration, self._parameters(), pricing, "")
+        assert estimate.missing_models == ()
+
+
+class TestProviderQualifiedPricing:
+    @staticmethod
+    def _configuration(provider: str) -> CrossfireConfiguration:
+        active = ProviderConfiguration(
+            name=provider,
+            base_url="https://example.test/v1",
+            api_key_env="KEY",
+            model_ids=(("vendor/model", "wire-model"),),
+        )
+        openrouter = ProviderConfiguration(
+            name="openrouter",
+            base_url="https://openrouter.ai/api/v1",
+            api_key_env="OPENROUTER_API_KEY",
+        )
+        providers = (active,) if provider == "openrouter" else (active, openrouter)
+        return CrossfireConfiguration(
+            provider=provider,
+            providers=providers,
+            generators=ModelGroup(names=("vendor/model",), context_window=16000, max_output_tokens=1000),
+            reviewers=ModelGroup(names=(), context_window=16000, max_output_tokens=1000),
+            synthesizer=ModelGroup(names=("vendor/model",), context_window=16000, max_output_tokens=1000),
+            enricher=ModelGroup(names=(), context_window=16000, max_output_tokens=1000),
+            search=SearchConfiguration(enabled=False),
+            limits=LimitsConfiguration(),
+        )
+
+    def test_keys_are_provider_qualified_and_keep_fallbacks(self):
+        keys = _pricing_keys_for(self._configuration("opencode"))("vendor/model")
+        assert keys == ("opencode::wire-model", "wire-model", "vendor/model")
+
+    def test_explicit_provider_prefix_overrides_active_provider(self):
+        keys = _pricing_keys_for(self._configuration("opencode"))("openrouter:vendor/model")
+        assert keys[0] == "openrouter::vendor/model"
+
+    def test_estimate_picks_matching_provider_price(self):
         pricing = {
-            "vendor/cheap": (0.000001, 0.000010),
-            "vendor/expensive": (0.000005, 0.000002),
+            "opencode::wire-model": (0.00001, 0.00005),
+            "opencode-go::wire-model": (0.000001, 0.000005),
         }
-        missing: list[str] = []
-        price_in, price_out = _average_group_price(group, pricing, missing)
-        assert price_in == pytest.approx(0.000003)
-        assert price_out == pytest.approx(0.000006)
-        assert missing == []
-
-    def test_missing_model_tracked(self):
-        group = ModelGroup(
-            names=("openrouter:vendor/known", "openrouter:vendor/unknown"),
-            context_window=16000,
-            max_output_tokens=4096,
+        parameters = RunParameters(
+            mode=Mode.CODE,
+            task=Task(instruction="Build something"),
+            num_generators=1,
+            num_reviewers_per_candidate=0,
+            num_rounds=1,
+            dry_run=True,
+            enrich=False,
         )
-        pricing = {"vendor/known": (0.001, 0.002)}
-        missing: list[str] = []
-        _average_group_price(group, pricing, missing)
-        assert missing == ["openrouter:vendor/unknown"]
+        zen = estimate_cost(self._configuration("opencode"), parameters, pricing, "")
+        go = estimate_cost(self._configuration("opencode-go"), parameters, pricing, "")
+        assert zen.missing_models == ()
+        assert go.missing_models == ()
+        assert zen.total_usd > go.total_usd
 
-    def test_all_missing_returns_zeros(self):
-        group = ModelGroup(
-            names=("openrouter:vendor/unknown",),
-            context_window=16000,
-            max_output_tokens=4096,
+
+class TestComputeCostFromPricing:
+    def test_computes_cost_from_provider_qualified_price(self):
+        configuration = CrossfireConfiguration(
+            generators=ModelGroup(names=("glm-5.3",), context_window=16000),
+            search=SearchConfiguration(enabled=False),
+            limits=LimitsConfiguration(),
         )
-        missing: list[str] = []
-        price_in, price_out = _average_group_price(group, {}, missing)
-        assert price_in == 0.0
-        assert price_out == 0.0
+        parameters = RunParameters(mode=Mode.CODE, task=Task(instruction="x"), dry_run=True)
+        orchestrator = Orchestrator(configuration, parameters)
+        orchestrator._pricing = {"opencode::glm-5.3": (1e-6, 2e-6)}
+        cost = orchestrator._compute_cost("opencode", "glm-5.3", Usage(input_tokens=100, output_tokens=50))
+        assert cost == pytest.approx(100 * 1e-6 + 50 * 2e-6)
+
+    def test_unknown_model_returns_none(self):
+        configuration = CrossfireConfiguration(
+            generators=ModelGroup(names=("glm-5.3",), context_window=16000),
+            search=SearchConfiguration(enabled=False),
+            limits=LimitsConfiguration(),
+        )
+        parameters = RunParameters(mode=Mode.CODE, task=Task(instruction="x"), dry_run=True)
+        orchestrator = Orchestrator(configuration, parameters)
+        orchestrator._pricing = {}
+        assert orchestrator._compute_cost("opencode", "missing", Usage(input_tokens=1, output_tokens=1)) is None
 
 
 class TestParseLengthHint:

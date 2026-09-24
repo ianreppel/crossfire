@@ -8,10 +8,12 @@ from pathlib import Path
 from typing import Any
 
 from crossfire.core.domain import (
+    DEFAULT_PROVIDER_CONFIGURATIONS,
     CrossfireConfiguration,
     LimitsConfiguration,
     ModelGroup,
     ModelGroupOverrides,
+    ProviderConfiguration,
     SearchConfiguration,
 )
 
@@ -64,6 +66,14 @@ _ROLE_DEFAULTS: dict[str, tuple[int, int]] = {
     "synthesizer": (200000, 32000),
 }
 
+# [limits.reasoning] uses the plural group names from [models.*]; roles are singular.
+_ROLE_GROUP_TO_ROLE: dict[str, str] = {
+    "generators": "generator",
+    "reviewers": "reviewer",
+    "synthesizer": "synthesizer",
+    "enricher": "enricher",
+}
+
 
 def _parse_mode_overrides(modes_raw: dict[str, Any]) -> dict[str, ModelGroupOverrides]:
     result: dict[str, ModelGroupOverrides] = {}
@@ -73,15 +83,59 @@ def _parse_mode_overrides(modes_raw: dict[str, Any]) -> dict[str, ModelGroupOver
         kwargs: dict[str, ModelGroup] = {}
         for role in ("generators", "reviewers", "synthesizer", "enricher"):
             if role in mode_data:
-                cw_default, mot_default = _ROLE_DEFAULTS[role]
+                context_window_default, max_output_tokens_default = _ROLE_DEFAULTS[role]
                 kwargs[role] = _parse_model_group(
                     mode_data[role],
-                    default_context_window=cw_default,
-                    default_max_output_tokens=mot_default,
+                    default_context_window=context_window_default,
+                    default_max_output_tokens=max_output_tokens_default,
                 )
         if kwargs:
             result[mode_name] = ModelGroupOverrides(**kwargs)
     return result
+
+
+def _parse_providers(raw: dict[str, Any]) -> tuple[ProviderConfiguration, ...]:
+    """Merges TOML provider overrides onto the built-in gateway definitions."""
+    provider_overrides = raw.get("providers", {})
+    builtin_providers: dict[str, ProviderConfiguration] = {
+        provider.name: provider for provider in DEFAULT_PROVIDER_CONFIGURATIONS
+    }
+    providers: dict[str, ProviderConfiguration] = dict(builtin_providers)
+
+    for provider_name, provider_data in provider_overrides.items():
+        if not isinstance(provider_data, dict):
+            continue
+        base_provider = builtin_providers.get(provider_name)
+        default_api_key_env = f"{provider_name.upper().replace('-', '_')}_API_KEY"
+        model_ids = tuple(
+            (str(neutral_slug), str(wire_model_id))
+            for neutral_slug, wire_model_id in provider_data.get("model_ids", {}).items()
+        )
+        providers[provider_name] = ProviderConfiguration(
+            name=provider_name,
+            base_url=str(provider_data.get("base_url", base_provider.base_url if base_provider else "")),
+            api_key_env=str(
+                provider_data.get("api_key_env", base_provider.api_key_env if base_provider else default_api_key_env)
+            ),
+            requires_session=bool(
+                provider_data.get("requires_session", base_provider.requires_session if base_provider else False)
+            ),
+            model_ids=model_ids,
+        )
+
+    # Backwards compatibility: an [openrouter] section with a custom api_key_env still wins.
+    legacy_api_key_env = raw.get("openrouter", {}).get("api_key_env")
+    if legacy_api_key_env and "openrouter" in providers:
+        existing_provider = providers["openrouter"]
+        providers["openrouter"] = ProviderConfiguration(
+            name=existing_provider.name,
+            base_url=existing_provider.base_url,
+            api_key_env=str(legacy_api_key_env),
+            requires_session=existing_provider.requires_session,
+            model_ids=existing_provider.model_ids,
+        )
+
+    return tuple(providers.values())
 
 
 def load_configuration(
@@ -98,16 +152,20 @@ def load_configuration(
 
     overrides = cli_overrides or {}
 
-    openrouter = raw.get("openrouter", {})
-    api_key_env = openrouter.get("api_key_env", "OPENROUTER_API_KEY")
+    providers = _parse_providers(raw)
+    provider_name = str(
+        overrides.get("provider") or raw.get("provider") or ("openrouter" if raw.get("openrouter") else "opencode")
+    )
+    active_provider = next((p for p in providers if p.name == provider_name), None)
+    api_key_env = active_provider.api_key_env if active_provider else "OPENCODE_API_KEY"
 
     models_raw = raw.get("models", {})
     parsed_groups: dict[str, ModelGroup] = {}
-    for role, (cw_default, mot_default) in _ROLE_DEFAULTS.items():
+    for role, (context_window_default, max_output_tokens_default) in _ROLE_DEFAULTS.items():
         parsed_groups[role] = _parse_model_group(
             models_raw.get(role, {}),
-            default_context_window=cw_default,
-            default_max_output_tokens=mot_default,
+            default_context_window=context_window_default,
+            default_max_output_tokens=max_output_tokens_default,
         )
     enricher = parsed_groups["enricher"]
     generators = parsed_groups["generators"]
@@ -121,13 +179,9 @@ def load_configuration(
     )
 
     limits_raw = raw.get("limits", {})
-    max_concurrent = overrides.get(
+    max_concurrent_requests = overrides.get(
         "max_concurrent_requests",
         limits_raw.get("max_concurrent_requests", 10),
-    )
-    temperature = overrides.get(
-        "temperature_default",
-        limits_raw.get("temperature_default", 0.2),
     )
     http_timeout = overrides.get(
         "http_timeout",
@@ -137,17 +191,27 @@ def load_configuration(
         "search_timeout",
         limits_raw.get("search_timeout", 30.0),
     )
+    reasoning_effort_by_role = tuple(
+        (_ROLE_GROUP_TO_ROLE.get(str(group), str(group)), str(effort))
+        for group, effort in limits_raw.get("reasoning", {}).items()
+    )
     limits = LimitsConfiguration(
-        max_concurrent_requests=int(max_concurrent),
-        temperature_default=float(temperature),
+        max_concurrent_requests=int(max_concurrent_requests),
+        temperature_generators=float(limits_raw.get("temperature_generators", 0.7)),
+        temperature_reviewers=float(limits_raw.get("temperature_reviewers", 0.1)),
+        temperature_synthesizer=float(limits_raw.get("temperature_synthesizer", 0.2)),
+        temperature_enricher=float(limits_raw.get("temperature_enricher", 0.3)),
         http_timeout=float(http_timeout),
         search_timeout=float(search_timeout),
+        reasoning_effort_by_role=reasoning_effort_by_role,
     )
 
     mode_overrides = _parse_mode_overrides(raw.get("modes", {}))
 
     return CrossfireConfiguration(
         api_key_env=api_key_env,
+        provider=provider_name,
+        providers=providers,
         enricher=enricher,
         generators=generators,
         reviewers=reviewers,
@@ -159,11 +223,16 @@ def load_configuration(
 
 
 def get_api_key(configuration: CrossfireConfiguration) -> str:
-    """Resolves the OpenRouter API key from the environment."""
-    key = os.environ.get(configuration.api_key_env, "")
+    """Resolves the API key for the active provider from the environment.
+
+    Derived from the active provider rather than the stored ``api_key_env`` field, so the key can never drift
+    from the selected gateway.
+    """
+    provider = configuration.active_provider()
+    key = os.environ.get(provider.api_key_env, "")
     if not key:
         raise RuntimeError(
-            f"No API key. Set {configuration.api_key_env} in your environment "
-            "— Crossfire can't talk to OpenRouter without it."
+            f"No API key. Set {provider.api_key_env} in your environment. "
+            f"Crossfire can't talk to {provider.name} without it."
         )
     return key

@@ -19,7 +19,7 @@ from rich.progress import BarColumn, Progress, TextColumn, TimeElapsedColumn
 from rich.table import Table
 from rich.text import Text
 
-from crossfire.core.domain import CostEstimate, Phase, RunParameters
+from crossfire.core.domain import CostEstimate, Phase, RunParameters, strip_model_prefix
 
 _PHASE_LABELS: dict[Phase, tuple[str, str]] = {
     Phase.ENRICHMENT: ("Enriching", "blue"),
@@ -34,8 +34,8 @@ _SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
 
 def _shorten_model(model: str) -> str:
-    """Strips the ``openrouter:vendor/`` prefix, keeping only the model slug."""
-    return model.split("/")[-1]
+    """Strips any ``provider:`` prefix and ``vendor/`` namespace, keeping only the model slug."""
+    return strip_model_prefix(model).split("/")[-1]
 
 
 def _format_elapsed(seconds: float) -> str:
@@ -102,7 +102,7 @@ class TUI:
 
         self.console.print(
             Panel(
-                f"[bold]Crossfire[/bold] — {parameters.mode.value} mode\n"
+                f"[bold]Crossfire[/bold]: {parameters.mode.value} mode\n"
                 f"Rounds: {parameters.num_rounds} | "
                 f"Generators: {parameters.num_generators} | "
                 f"Reviewers/candidate: {parameters.num_reviewers_per_candidate}"
@@ -229,6 +229,8 @@ class TUI:
             table.add_row("Round failures", str(failures))
             table.add_row("Total input tokens", str(cost_summary.get("total_input_tokens", 0)))
             table.add_row("Total output tokens", str(cost_summary.get("total_output_tokens", 0)))
+            table.add_row("Cache read tokens", str(cost_summary.get("total_cache_read_tokens", 0)))
+            table.add_row("Cache write tokens", str(cost_summary.get("total_cache_write_tokens", 0)))
             table.add_row("Total cost", f"${cost_summary.get('total_cost', 0):.4f}")
 
         self.console.print(table)
@@ -308,8 +310,7 @@ class TUI:
             return Text.from_markup(f"  Enrichment  [green]✓[/green]  {model_name}  [dim]{elapsed}[/dim]")
 
         return Text.from_markup(
-            f"  Round {round_number}/{self._total_rounds}  [green]✓[/green]"
-            f"  {task_count} tasks  [dim]{elapsed}[/dim]"
+            f"  Round {round_number}/{self._total_rounds}  [green]✓[/green]  {task_count} tasks  [dim]{elapsed}[/dim]"
         )
 
     def _build_collapsed_phase(self, phase: Phase, phase_rows: list[_TaskRow]) -> Text:

@@ -3,7 +3,25 @@
 from __future__ import annotations
 
 from crossfire.core.domain import Candidate, CandidateDecision, Review
-from crossfire.core.prompts import _build_review_triage, parse_review_verdict, parse_synthesis_decision
+from crossfire.core.prompts import (
+    _build_review_triage,
+    parse_review_verdict,
+    parse_synthesis_decision,
+    strip_synthesis_decision,
+)
+
+
+class TestStripSynthesisDecision:
+    def test_strips_bare_decision_line(self):
+        text = '{"crossfire_synthesis": {"notes": "n", "attributions": []}}\n# Title\ntext'
+        assert strip_synthesis_decision(text) == "# Title\ntext"
+
+    def test_strips_fenced_decision_block(self):
+        text = '```json\n{"crossfire_synthesis": {"notes": "n", "attributions": []}}\n```\n# Title\ntext'
+        assert strip_synthesis_decision(text) == "# Title\ntext"
+
+    def test_leaves_text_without_a_decision(self):
+        assert strip_synthesis_decision("# Title\ntext") == "# Title\ntext"
 
 
 class TestParseReviewVerdict:

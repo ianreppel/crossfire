@@ -19,9 +19,11 @@ from crossfire.core.orchestrator import Orchestrator, RunFailedError
 from crossfire.core.pricing import (
     PRICING_FILENAME,
     estimate_cost,
+    fetch_models_dev_pricing,
     fetch_pricing,
     load_pricing,
     parse_api_response,
+    parse_models_dev_response,
     save_pricing,
 )
 from crossfire.core.search import get_search_api_key
@@ -30,7 +32,7 @@ from crossfire.ui.tui import TUI
 
 @click.group()
 def cli() -> None:
-    """Crossfire — adversarial LLM refinement."""
+    """Crossfire: adversarial LLM refinement."""
 
 
 @cli.command()
@@ -92,6 +94,11 @@ def cli() -> None:
     default=None,
     help="Path to crossfire.toml.",
 )
+@click.option(
+    "--provider",
+    default=None,
+    help="Inference gateway: opencode (default), opencode-go, openrouter, or synthetic. Overrides crossfire.toml.",
+)
 def run(
     mode: str,
     instruction: str | None,
@@ -108,6 +115,7 @@ def run(
     output: str | None,
     run_dir: str | None,
     configuration_path: str | None,
+    provider: str | None,
 ) -> None:
     """Runs the Crossfire pipeline."""
     if not verbose:
@@ -128,6 +136,7 @@ def run(
 
     base_configuration: CrossfireConfiguration = load_configuration(
         configuration_path=Path(configuration_path) if configuration_path else None,
+        cli_overrides={"provider": provider} if provider else None,
     )
     configuration: CrossfireConfiguration = base_configuration.resolve_for_mode(mode)
 
@@ -231,22 +240,32 @@ def clean() -> None:
 
 @cli.command()
 def prices() -> None:
-    """Fetches current model pricing from OpenRouter and writes pricing.json."""
+    """Fetches current model pricing from OpenRouter and models.dev, then writes pricing.json."""
     if not Path("crossfire.toml").is_file():
         click.echo(
-            "No can do! There is no crossfire.toml in the current directory. " "Run this from the project root.",
+            "No can do! There is no crossfire.toml in the current directory. Run this from the project root.",
             err=True,
         )
         sys.exit(1)
 
+    pricing: dict[str, tuple[float, float]] = {}
+
     click.echo("Fetching pricing from OpenRouter...", err=True)
     try:
-        raw = fetch_pricing()
+        pricing.update(parse_api_response(fetch_pricing()))
     except Exception as exception:
-        click.echo(f"Failed to fetch pricing: {exception}", err=True)
+        click.echo(f"  OpenRouter fetch failed: {exception}", err=True)
+
+    click.echo("Fetching pricing from models.dev (OpenCode Zen/Go, Synthetic)...", err=True)
+    try:
+        pricing.update(parse_models_dev_response(fetch_models_dev_pricing()))
+    except Exception as exception:
+        click.echo(f"  models.dev fetch failed: {exception}", err=True)
+
+    if not pricing:
+        click.echo("Failed to fetch pricing from any source.", err=True)
         sys.exit(1)
 
-    pricing = parse_api_response(raw)
     fetched_at: str = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     output_path = Path(PRICING_FILENAME)
     save_pricing(pricing, fetched_at, output_path)

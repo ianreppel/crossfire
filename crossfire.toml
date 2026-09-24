@@ -2,100 +2,183 @@
 # Crossfire Configuration
 # ============================================================================
 #
+# Providers:
+#
+#   One neutral model list serves every gateway. Pick a gateway with the
+#   `provider` key below or the `--provider` CLI flag, and set the matching API
+#   key in your environment:
+#
+#     opencode      OPENCODE_API_KEY       (default; https://opencode.ai/zen)
+#     opencode-go   OPENCODE_API_KEY       (same key; the Go subscription is a plan on the account)
+#     openrouter    OPENROUTER_API_KEY
+#     synthetic     SYNTHETIC_API_KEY      (https://synthetic.new; OpenAI-compatible)
+#
+#   Model slugs below are the neutral (OpenRouter-style) names. Each gateway maps
+#   them to its wire IDs via [providers.*.model_ids]. Slugs absent from a map are
+#   passed through unchanged, so OpenRouter needs no map at all.
+#
 # Model selection philosophy:
 #
-#   Models are listed in interleaved quality/budget order:
-#     1st = best quality, 2nd = cheapest, 3rd = second best, 4th = second cheapest
-#   This way --num-generators 2 picks the best + cheapest (good diversity),
-#   and --num-generators 4 scales up without being all-cheap or all-expensive.
+#   Highest-frequency roles get the cheapest capable models, ordered cheapest
+#   first. A default run (1 generator, a few reviewers) is therefore affordable,
+#   and raising the counts adds pricier models rather than starting with them.
+#
+#   The frontier models are placed where they work: Opus 5.5 ($4/$20) synthesises,
+#   Fable ($10/$50) reviews, and Astra ($10/$50) is the synthesis fallback.
+#   Fable refuses the attribution block that synthesis requires, so it reviews and
+#   Opus 5.5, which accepts the block, synthesises instead. See [models.synthesizer].
 #
 #   Per-mode [modes.*] sections override the global [models.*] defaults.
 #   Only roles that differ from the global need to be specified.
 #
-#   Run 'crossfire prices' to fetch current rates into pricing.json.
+#   Run 'crossfire prices' to fetch current rates from OpenRouter and models.dev.
 # ============================================================================
 
-[openrouter]
+provider = "opencode"
+
+# ---------------------------------------------------------------------------
+# OpenCode Zen (pay-as-you-go). Frontier models live here.
+# ---------------------------------------------------------------------------
+
+[providers.opencode]
+api_key_env = "OPENCODE_API_KEY"
+requires_session = true
+
+[providers.opencode.model_ids]
+"anthropic/claude-opus-5.5"         = "claude-opus-5-5"
+"anthropic/claude-fable-5.1"        = "claude-fable-5-1"
+"openai/gpt-6-astra"                = "gpt-6-astra"
+"openai/gpt-6-sol"                  = "gpt-6-sol"
+"openai/gpt-6-luna"                 = "gpt-6-luna"
+"openai/gpt-5.6-luna"               = "gpt-5.6-luna"
+"z-ai/glm-5.3"                      = "glm-5.3"
+"z-ai/glm-5.3-flash"                = "glm-5.3-flash"
+"deepseek/deepseek-v4.1-flash"      = "deepseek-v4.1-flash"
+"moonshotai/kimi-k3"                = "kimi-k3"
+
+# ---------------------------------------------------------------------------
+# OpenCode Go ($10/mo). Open models only, so frontier slugs are substituted
+# with the closest Go model to keep the same neutral bench usable.
+# ---------------------------------------------------------------------------
+
+[providers.opencode-go]
+# Same key as Zen: Go is a subscription on the account, not a separate credential.
+# Override here only if you somehow hold a distinct Go key.
+api_key_env = "OPENCODE_API_KEY"
+requires_session = true
+
+[providers.opencode-go.model_ids]
+# Go serves only gpt-6-luna, gpt-5.6-luna, glm-5.3, glm-5.3-flash and kimi-k3; everything else is
+# substituted with the closest of those.
+"anthropic/claude-opus-5.5"         = "kimi-k3"
+"anthropic/claude-fable-5.1"        = "glm-5.3"
+"openai/gpt-6-astra"                = "kimi-k3"
+"openai/gpt-6-sol"                  = "gpt-5.6-luna"
+"openai/gpt-6-luna"                 = "glm-5.3-flash"
+"openai/gpt-5.6-luna"               = "gpt-5.6-luna"
+"z-ai/glm-5.3"                      = "glm-5.3"
+"z-ai/glm-5.3-flash"                = "glm-5.3-flash"
+"deepseek/deepseek-v4.1-flash"      = "glm-5.3-flash"
+"moonshotai/kimi-k3"                = "kimi-k3"
+
+# ---------------------------------------------------------------------------
+# OpenRouter (neutral slugs are already OpenRouter IDs, so no map is needed).
+# ---------------------------------------------------------------------------
+
+[providers.openrouter]
 api_key_env = "OPENROUTER_API_KEY"
+
+# ---------------------------------------------------------------------------
+# Synthetic (https://synthetic.new). OpenAI-compatible, so it speaks chat.
+# Text roles ride the syn:* aliases, which track whatever model Synthetic
+# currently routes to, so the bench survives an upstream model swap. Concrete
+# open models are used only where the bench names them: GLM-5.3, Kimi-K3 and
+# DeepSeek-V4.1-Flash.
+# ---------------------------------------------------------------------------
+
+[providers.synthetic]
+api_key_env = "SYNTHETIC_API_KEY"
+
+[providers.synthetic.model_ids]
+"anthropic/claude-opus-5.5"         = "syn:large:text"
+"anthropic/claude-fable-5.1"        = "syn:large:text"
+"openai/gpt-6-astra"                = "syn:large:text"
+"openai/gpt-6-sol"                  = "syn:large:text"
+"openai/gpt-5.6-luna"               = "syn:large:text"
+"openai/gpt-6-luna"                 = "syn:small:text"
+"z-ai/glm-5.3"                      = "hf:zai-org/GLM-5.3-Flash"
+"z-ai/glm-5.3-flash"                = "hf:zai-org/GLM-5.3-Flash"
+"deepseek/deepseek-v4.1-flash"      = "hf:deepseek-ai/DeepSeek-V4.1-Flash"
+"moonshotai/kimi-k3"                = "hf:moonshotai/Kimi-K3"
 
 # ---------------------------------------------------------------------------
 # Global defaults (fallback when a mode doesn't override a role)
 # ---------------------------------------------------------------------------
 
 [models.generators]
+# Generation is the longest-output, highest-frequency role, so the expensive
+# frontier models are kept out of it. Here: strongest cheap models first, so a
+# default 1-generator run is both good and affordable.
 names = [
-    "openrouter:anthropic/claude-sonnet-4",          # strong all-rounder
-    "openrouter:deepseek/deepseek-v3.2",             # near-GPT-5 quality, but dirt cheap
-    "openrouter:openai/gpt-4.1",                     # solid yet cheap
-    "openrouter:meta-llama/llama-4-maverick",        # cheapest, good for diversity
-    "openrouter:mistralai/devstral-2512",            # agentic code specialist
+    "openai/gpt-6-luna",                 # frontier quality at $0.10/$0.50 per M
+    "z-ai/glm-5.3-flash",                # fast and cheap
+    "openai/gpt-5.6-luna",               # cheap reasoning
+    "deepseek/deepseek-v4.1-flash",      # dirt cheap
+    "z-ai/glm-5.3",                      # strongest open all-rounder
+    "moonshotai/kimi-k3",                # strong open, different lab
 ]
 context_window = 200000
-max_output_tokens = 12000
-
-[models.generators.context_windows]
-"openrouter:deepseek/deepseek-v3.2"       = 64000
-"openrouter:meta-llama/llama-4-maverick"  = 1000000
-"openrouter:mistralai/devstral-2512"      = 262000
+max_output_tokens = 16000
 
 [models.reviewers]
-# Reviewers are where the adversarial value lives. 
-# Reasoning models and blunt critics matter more than raw generation power.
-# 15 models supports up to 5 generators * 3 reviewers per candidate.
+# Reviewers are where the adversarial value lives, and they are the most-called
+# role: cheap reasoning beats frontier prose. Ordered cheapest first, with the
+# models both Zen and Go serve at the head and the window sliding one place per
+# round, so a normal run never leaves that cheap, portable set. Only long runs
+# reach the gateway-specific and expensive tail.
+#
+# Zen and Go:      gpt-6-luna, glm-5.3-flash, gpt-5.6-luna, glm-5.3, kimi-k3
+# Zen only:        deepseek-v4.1-flash, gpt-6-sol, gpt-6-astra, fable-5.1 (substituted on Go)
+# OpenRouter only: perplexity/sonar-reasoning-pro
+# Synthetic maps every slug above onto its syn:* aliases or named open models.
 names = [
-    "openrouter:openai/o4-mini",                     # critical reasoning
-    "openrouter:google/gemini-3.1-flash-lite",       # fast, 1M context
-    "openrouter:mistralai/mistral-medium-3",         # cheap generalist
-    "openrouter:x-ai/grok-3-mini",                   # concise, opinionated
-    "openrouter:qwen/qwen-plus-2025-07-28",          # hybrid reasoning
-    "openrouter:openai/gpt-4.1-mini",                # cheap, fast, competent
-    "openrouter:anthropic/claude-haiku-4.5",         # fast critic
-    "openrouter:google/gemini-2.5-flash",            # 1M context, reasoning
-    "openrouter:deepseek/deepseek-v3.2",             # blunt yet detail-oriented
-    "openrouter:mistralai/devstral-2512",            # code-aware perspective
-    "openrouter:google/gemini-2.5-pro-preview-03-25", # verbose but thorough
-    "openrouter:perplexity/sonar-reasoning-pro",     # reasoning + search
-    "openrouter:meta-llama/llama-4-maverick",        # cheapest structure checker
-    "openrouter:openai/gpt-4.1",                     # solid generalist
-    "openrouter:anthropic/claude-sonnet-4",          # thorough but expensive
+    "openai/gpt-6-luna",                 # frontier quality, cheap
+    "z-ai/glm-5.3-flash",                # fast, cheap
+    "openai/gpt-5.6-luna",               # cheap reasoning
+    "deepseek/deepseek-v4.1-flash",      # cheap, blunt
+    "z-ai/glm-5.3",                      # strong open
+    "moonshotai/kimi-k3",                # strong open, different lab
+    "openai/gpt-6-sol",                  # mid frontier reasoning (Zen)
+    "openrouter:perplexity/sonar-reasoning-pro",  # grounded reasoning (OpenRouter only)
+    "openai/gpt-6-astra",                # expensive thorough critic (Zen)
+    "anthropic/claude-fable-5.1",        # expensive thorough critic (Zen)
 ]
-context_window = 128000
+context_window = 200000
 max_output_tokens = 8000
 
-[models.reviewers.context_windows]
-"openrouter:deepseek/deepseek-v3.2"                = 64000
-"openrouter:google/gemini-3.1-flash-lite"          = 1000000
-"openrouter:google/gemini-2.5-flash"               = 1000000
-"openrouter:google/gemini-2.5-pro-preview-03-25"   = 1000000
-"openrouter:qwen/qwen-plus-2025-07-28"             = 1000000
-"openrouter:meta-llama/llama-4-maverick"           = 1000000
-"openrouter:mistralai/devstral-2512"               = 262000
-"openrouter:anthropic/claude-haiku-4.5"            = 200000
-"openrouter:anthropic/claude-sonnet-4"             = 200000
-"openrouter:openai/o4-mini"                        = 200000
-"openrouter:openai/gpt-4.1"                        = 200000
-
-[models.reviewers.max_output_tokens_by_model]
-"openrouter:deepseek/deepseek-v3.2" = 6000
-
 [models.enricher]
-names = ["openrouter:openai/gpt-4.1-mini"]           # cheap, fast, good at expansion
+# Enrichment is a short rewrite, not a reasoning task. A responses-protocol model with reasoning effort
+# "low" (see [limits.reasoning]) keeps it fast; a chat reasoning model burned its whole budget on thinking.
+# (Big Pickle is free but the Zen API rejects non-OpenCode clients with FreeTierError, so it cannot be used here.)
+names = ["openai/gpt-6-luna"]
 context_window = 128000
-max_output_tokens = 4096
+max_output_tokens = 16000
 
 [models.synthesizer]
+# Synthesis needs the per-candidate attribution block. Fable refuses it: a safety-classifier false
+# positive on instructions to keep/discard/attribute candidate content (reproduced live across many
+# phrasings), so Fable reviews instead, where no such instruction is sent. Opus 5.5 accepts the block
+# (verified live: end_turn and a parseable attribution line) and at $4/$20 costs a quarter of Fable/Astra.
+#
+# The pool rotates by round (`names[(round_num - 1) % len(names)]`) and tries the rest as fallbacks, so it
+# holds exactly two models: the primary leads odd rounds (including the default third and final round) and
+# the fallback leads even ones. A third entry would move the final round onto the cheap fallback.
 names = [
-    "openrouter:anthropic/claude-opus-4",            # best multi-doc reasoning
-    "openrouter:openai/gpt-5",                       # strong reasoning, 400K context
+    "anthropic/claude-opus-5.5",         # frontier synthesis; accepts the attribution block, cheaper than astra
+    "openai/gpt-6-astra",                # strong multi-doc reasoning; leads even rounds, and the fallback
 ]
 context_window = 200000
 max_output_tokens = 32000
-
-[models.synthesizer.context_windows]
-"openrouter:openai/gpt-5" = 400000
-
-[models.synthesizer.max_output_tokens_by_model]
-"openrouter:openai/gpt-5" = 128000
 
 [search]
 enabled = true
@@ -103,226 +186,101 @@ provider = "tavily"
 
 [limits]
 max_concurrent_requests = 10
-temperature_default = 0.2
+# Frontier models on the messages/responses protocols ignore temperature; these
+# values apply to the OpenAI-compatible chat models only. Generators run warm
+# for candidate diversity; reviewers run cold for consistent critique.
+temperature_generators = 0.7
+temperature_reviewers = 0.1
+temperature_synthesizer = 0.2
+temperature_enricher = 0.3
+# Reasoning effort applies to the responses protocol only (it lowers the default
+# medium effort and therefore cost). Ignored on chat and messages protocols.
+http_timeout = 240.0
+
+[limits.reasoning]
+enricher = "low"
+generators = "medium"
+reviewers = "low"
+synthesizer = "medium"
 
 # ============================================================================
 # Mode-specific overrides
 # ============================================================================
 
 # --- Research -----------------------------------------------------------------
-# Perplexity provides grounded search with real citations. 
-# Multiple search-capable generators give diverse sourcing. 
-# Reviewers must not overlap with generators!
 [modes.research.generators]
+# The two perplexity entries are OpenRouter-only: they are kept when --provider openrouter and dropped
+# from every other gateway, so native web-grounded research returns on OpenRouter without breaking Zen.
 names = [
-    "openrouter:perplexity/sonar-pro",               # grounded search, real citations
-    "openrouter:deepseek/deepseek-v3.2",             # cheap analytical angle
-    "openrouter:anthropic/claude-sonnet-4",          # structured analysis
-    "openrouter:openai/gpt-4.1",                     # solid researcher
-    "openrouter:perplexity/sonar-deep-research",     # multi-step deep research
+    "openrouter:perplexity/sonar-pro",           # native web-grounded research (OpenRouter only)
+    "openrouter:perplexity/sonar-deep-research",  # multi-step research (OpenRouter only)
+    "openai/gpt-6-luna",                 # grounded reasoning, cheap
+    "z-ai/glm-5.3-flash",                # fast analytical angle
+    "deepseek/deepseek-v4.1-flash",      # cheap
+    "z-ai/glm-5.3",                      # cheap analytical angle
+    "moonshotai/kimi-k3",                # long-context synthesis
 ]
 context_window = 200000
-max_output_tokens = 12000
+max_output_tokens = 16000
 
-[modes.research.generators.context_windows]
-"openrouter:perplexity/sonar-pro"           = 200000
-"openrouter:perplexity/sonar-deep-research" = 128000
-"openrouter:deepseek/deepseek-v3.2"         = 64000
-
-[modes.research.reviewers]
-# 15 reviewers: supports up to 5 generators * 3 reviewers per candidate.
-# None overlap with the research generators above.
-names = [
-    "openrouter:openai/o4-mini",                     # reasoning claim checker
-    "openrouter:google/gemini-3.1-flash-lite",       # fast, cheap
-    "openrouter:mistralai/mistral-medium-3",         # generalist
-    "openrouter:x-ai/grok-3-mini",                   # concise critic
-    "openrouter:qwen/qwen-plus-2025-07-28",          # hybrid reasoner
-    "openrouter:openai/gpt-4.1-mini",                # cheap, fast
-    "openrouter:anthropic/claude-haiku-4.5",         # fast Anthropic critic
-    "openrouter:google/gemini-2.5-flash",            # reasoning flash
-    "openrouter:mistralai/devstral-2512",            # different perspective
-    "openrouter:google/gemini-2.5-pro-preview-03-25", # verbose but thorough
-    "openrouter:perplexity/sonar-reasoning-pro",     # reasoning + search
-    "openrouter:meta-llama/llama-4-maverick",        # cheapest
-    "openrouter:openai/gpt-4o-mini",                 # tiny, fast
-    "openrouter:deepseek/deepseek-r1",               # reasoning specialist
-    "openrouter:google/gemma-3-27b-it",              # zero-cost filler
-]
-context_window = 128000
-max_output_tokens = 8000
-
-# Synthesizer: inherits global (Opus + GPT-5 rotating) — research needs the best
+# Synthesizer: inherits global, because research needs the best.
 
 # --- Code ---------------------------------------------------------------------
-# Codex is SOTA for code; DeepSeek V3.2 is GPT-5 class at a fraction of the cost.
-# o3 synthesizes code via reasoning.
 [modes.code.generators]
 names = [
-    "openrouter:openai/gpt-5.3-codex-20260224",     # SOTA agentic code
-    "openrouter:deepseek/deepseek-v3.2",             # GPT-5 class code, dirt cheap
-    "openrouter:openai/gpt-4.1",                     # solid coder
-    "openrouter:mistralai/devstral-2512",            # agentic multi-file code
-    "openrouter:anthropic/claude-sonnet-4",          # strong code generation
+    "openai/gpt-6-sol",                  # SOTA agentic code, mid price
+    "openai/gpt-6-luna",                 # frontier quality, cheap
+    "z-ai/glm-5.3",                      # strong open coder
+    "deepseek/deepseek-v4.1-flash",      # cheap
+    "moonshotai/kimi-k3",                # strong open coder
 ]
 context_window = 200000
-max_output_tokens = 12000
-
-[modes.code.generators.context_windows]
-"openrouter:deepseek/deepseek-v3.2"  = 64000
-"openrouter:mistralai/devstral-2512" = 262000
-
-[modes.code.reviewers]
-names = [
-    "openrouter:openai/o4-mini",                     # finds logic bugs
-    "openrouter:google/gemini-3.1-flash-lite",       # fast structural check
-    "openrouter:mistralai/mistral-medium-3",         # generalist
-    "openrouter:x-ai/grok-3-mini",                   # concise
-    "openrouter:qwen/qwen-plus-2025-07-28",          # hybrid reasoner
-    "openrouter:openai/gpt-4.1-mini",                # cheap
-    "openrouter:anthropic/claude-haiku-4.5",         # fast code reviewer
-    "openrouter:google/gemini-2.5-flash",            # reasoning flash
-    "openrouter:meta-llama/llama-4-maverick",        # structure/formatting
-    "openrouter:google/gemini-2.5-pro-preview-03-25", # thorough
-    "openrouter:perplexity/sonar-reasoning-pro",     # reasoning
-    "openrouter:deepseek/deepseek-r1",               # reasoning specialist
-    "openrouter:openai/gpt-4o-mini",                 # tiny, fast
-    "openrouter:google/gemma-3-27b-it",              # zero-cost filler
-    "openrouter:anthropic/claude-sonnet-4",          # thorough code review
-]
-context_window = 200000
-max_output_tokens = 8000
+max_output_tokens = 16000
 
 [modes.code.synthesizer]
-names = ["openrouter:openai/o3"]                      # reasoning model for code merge
+names = ["openai/gpt-6-sol"]
 context_window = 200000
 max_output_tokens = 32000
 
 # --- Edit ---------------------------------------------------------------------
-# Editing is lighter work. Sonnet synthesizes edits cheaply.
-[modes.edit.generators]
-names = [
-    "openrouter:anthropic/claude-sonnet-4",          # concise, decisive editor
-    "openrouter:deepseek/deepseek-v3.2",             # cheap
-    "openrouter:openai/gpt-4.1",                     # good editor
-    "openrouter:mistralai/devstral-2512",            # different style
-    "openrouter:meta-llama/llama-4-maverick",        # cheapest
-]
-context_window = 200000
-max_output_tokens = 12000
-
-[modes.edit.generators.context_windows]
-"openrouter:deepseek/deepseek-v3.2"      = 64000
-"openrouter:mistralai/devstral-2512"     = 262000
-"openrouter:meta-llama/llama-4-maverick" = 1000000
-
-[modes.edit.reviewers]
-names = [
-    "openrouter:openai/o4-mini",                     # clarity critique
-    "openrouter:google/gemini-3.1-flash-lite",       # fast
-    "openrouter:mistralai/mistral-medium-3",         # generalist
-    "openrouter:x-ai/grok-3-mini",                   # concise
-    "openrouter:qwen/qwen-plus-2025-07-28",          # hybrid reasoner
-    "openrouter:openai/gpt-4.1-mini",                # cheap
-    "openrouter:anthropic/claude-haiku-4.5",         # fast
-    "openrouter:google/gemini-2.5-flash",            # reasoning flash
-    "openrouter:google/gemini-2.5-pro-preview-03-25", # verbose (useful for editing)
-    "openrouter:perplexity/sonar-reasoning-pro",     # reasoning
-    "openrouter:deepseek/deepseek-r1",               # reasoning specialist
-    "openrouter:openai/gpt-4o-mini",                 # tiny
-    "openrouter:meta-llama/llama-4-maverick",        # cheapest
-    "openrouter:google/gemma-3-27b-it",              # zero-cost filler
-    "openrouter:openai/gpt-4.1",                     # solid
-]
-context_window = 128000
-max_output_tokens = 8000
+# Generators: inherit global; editing is lighter work and needs no special pool.
 
 [modes.edit.synthesizer]
-names = ["openrouter:anthropic/claude-sonnet-4"]      # editing doesn't need Opus
+names = ["openai/gpt-6-sol"]             # editing is light work; no need for frontier prices
 context_window = 200000
-max_output_tokens = 12000
+max_output_tokens = 16000
 
 # --- Check --------------------------------------------------------------------
-# Accuracy demands strong synthesis. Perplexity for grounding.
 [modes.check.generators]
 names = [
-    "openrouter:openai/gpt-4.1",                     # methodical
-    "openrouter:deepseek/deepseek-v3.2",             # cheap
-    "openrouter:anthropic/claude-sonnet-4",          # structured
-    "openrouter:perplexity/sonar-pro",               # grounded search for fact-check
-    "openrouter:meta-llama/llama-4-maverick",        # cheapest
+    "openrouter:perplexity/sonar-pro",   # web-grounded fact-checking (OpenRouter only)
+    "openai/gpt-6-luna",                 # methodical, cheap
+    "z-ai/glm-5.3-flash",                # cheap
+    "deepseek/deepseek-v4.1-flash",      # cheap
+    "z-ai/glm-5.3",                      # cheap
+    "moonshotai/kimi-k3",                # structured
 ]
 context_window = 200000
-max_output_tokens = 12000
+max_output_tokens = 16000
 
-[modes.check.generators.context_windows]
-"openrouter:deepseek/deepseek-v3.2"      = 64000
-"openrouter:perplexity/sonar-pro"        = 200000
-"openrouter:meta-llama/llama-4-maverick" = 1000000
-
-[modes.check.reviewers]
-names = [
-    "openrouter:openai/o4-mini",                     # logic validation
-    "openrouter:google/gemini-3.1-flash-lite",       # fast
-    "openrouter:mistralai/mistral-medium-3",         # generalist
-    "openrouter:x-ai/grok-3-mini",                   # concise
-    "openrouter:qwen/qwen-plus-2025-07-28",          # hybrid reasoner
-    "openrouter:openai/gpt-4.1-mini",                # cheap
-    "openrouter:anthropic/claude-haiku-4.5",         # fast
-    "openrouter:google/gemini-2.5-flash",            # reasoning flash
-    "openrouter:mistralai/devstral-2512",            # different perspective
-    "openrouter:google/gemini-2.5-pro-preview-03-25", # thorough
-    "openrouter:perplexity/sonar-reasoning-pro",     # reasoning + search
-    "openrouter:deepseek/deepseek-r1",               # reasoning specialist
-    "openrouter:openai/gpt-4o-mini",                 # tiny
-    "openrouter:google/gemma-3-27b-it",              # zero-cost filler
-    "openrouter:meta-llama/llama-4-maverick",        # cheapest
-]
-context_window = 128000
-max_output_tokens = 8000
-
-# Synthesizer: inherits global (Opus + GPT-5 rotating) — accuracy needs the best
+# Synthesizer: inherits global, because accuracy needs the best.
 
 # --- Writer -------------------------------------------------------------------
-# Creative voice needs diverse generators. Sonnet synthesizes to preserve voice.
 [modes.write.generators]
 names = [
-    "openrouter:anthropic/claude-sonnet-4",          # strong voice
-    "openrouter:deepseek/deepseek-v3.2",             # cheap, different tone
-    "openrouter:google/gemini-2.5-pro-preview-03-25", # verbose (a feature for writing)
-    "openrouter:openai/gpt-4.1",                     # solid
-    "openrouter:meta-llama/llama-4-maverick",        # cheapest
+    "openai/gpt-6-luna",                 # strong voice, cheap
+    "z-ai/glm-5.3-flash",                # cheap, different tone
+    "deepseek/deepseek-v4.1-flash",      # cheap
+    "z-ai/glm-5.3",                      # different register
+    "moonshotai/kimi-k3",                # strong open
 ]
 context_window = 200000
-max_output_tokens = 12000
-
-[modes.write.generators.context_windows]
-"openrouter:deepseek/deepseek-v3.2"                = 64000
-"openrouter:google/gemini-2.5-pro-preview-03-25"   = 1000000
-"openrouter:meta-llama/llama-4-maverick"           = 1000000
-
-[modes.write.reviewers]
-names = [
-    "openrouter:openai/gpt-4.1",                     # tough literary critic
-    "openrouter:google/gemini-3.1-flash-lite",       # fast
-    "openrouter:openai/o4-mini",                     # structural critique
-    "openrouter:x-ai/grok-3-mini",                   # concise
-    "openrouter:mistralai/mistral-medium-3",         # generalist
-    "openrouter:qwen/qwen-plus-2025-07-28",          # hybrid reasoner
-    "openrouter:openai/gpt-4.1-mini",                # cheap
-    "openrouter:anthropic/claude-haiku-4.5",         # fast
-    "openrouter:google/gemini-2.5-flash",            # reasoning flash
-    "openrouter:mistralai/devstral-2512",            # different perspective
-    "openrouter:perplexity/sonar-reasoning-pro",     # reasoning
-    "openrouter:deepseek/deepseek-r1",               # reasoning specialist
-    "openrouter:openai/gpt-4o-mini",                 # tiny
-    "openrouter:google/gemma-3-27b-it",              # zero-cost filler
-    "openrouter:meta-llama/llama-4-maverick",        # cheapest
-]
-context_window = 200000
-max_output_tokens = 8000
+max_output_tokens = 16000
 
 [modes.write.synthesizer]
-names = ["openrouter:anthropic/claude-sonnet-4"]      # voice preservation
+names = [
+    "anthropic/claude-opus-5.5",         # voice preservation, and it accepts the attribution block that Fable will not
+    "openai/gpt-6-astra",                # fallback
+]
 context_window = 200000
-max_output_tokens = 12000
+max_output_tokens = 32000

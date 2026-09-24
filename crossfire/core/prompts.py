@@ -428,6 +428,10 @@ def build_synthesizer_prompt(
     rules: str | None = None,
 ) -> tuple[str, str]:
     rules_text = rules or MODE_RULES[mode]
+    # The attribution block is essential. Fable refuses it (a safety-classifier false positive on
+    # instructions to keep/discard/attribute candidate content, reproduced live across many phrasings),
+    # so Fable reviews instead. Opus 5.5 accepts the block, so Claude can still synthesise.
+    # See the synthesizer pool in crossfire.toml.
     system = _SYNTHESIZER_SYSTEM[mode] + _SYNTHESIS_FORMAT
 
     parts: list[str] = [
@@ -482,8 +486,18 @@ def parse_synthesis_decision(text: str) -> tuple[list[CandidateDecision], str]:
     return [], ""
 
 
+_FENCED_DECISION_REGEX = re.compile(
+    r"```[a-zA-Z0-9_-]*[ \t]*\n(?:(?!```).)*?crossfire_synthesis(?:(?!```).)*?```[ \t]*\n?",
+    re.DOTALL,
+)
+
+
 def strip_synthesis_decision(text: str) -> str:
-    """Removes the ``crossfire_synthesis`` JSON line from synthesizer output."""
-    lines: list[str] = text.split("\n")
-    cleaned: list[str] = [line for line in lines if "crossfire_synthesis" not in line]
-    return "\n".join(cleaned).strip()
+    """Removes the ``crossfire_synthesis`` decision from synthesizer output.
+
+    Both shapes must go: the bare JSON line, and the same JSON wrapped in a markdown fence. Missing the
+    fenced form leaks the ```json and ``` markers into the final text.
+    """
+    without_fenced = _FENCED_DECISION_REGEX.sub("", text)
+    lines: list[str] = [line for line in without_fenced.split("\n") if "crossfire_synthesis" not in line]
+    return "\n".join(lines).strip()
