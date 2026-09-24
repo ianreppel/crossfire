@@ -1,0 +1,17 @@
+{
+  "file_scan_exclusions": [
+    "...",
+    "**/runs/**",
+    "**/.venv/**",
+    "**/__pycache__/**",
+    "**/.ruff_cache/**",
+    "**/.pytest_cache/**",
+    "**/.mypy_cache/**",
+    "**/htmlcov/**",
+    "**/dist/**",
+    "**/build/**",
+    "**/*.egg-info/**",
+    "**/.coverage",
+    "**/coverage.xml"
+  ]
+}

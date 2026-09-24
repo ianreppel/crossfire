@@ -7,6 +7,7 @@ import asyncio
 import httpx
 import pytest
 
+import crossfire.core.providers as providers_module
 from crossfire.core.domain import ProviderConfiguration, Role, strip_model_prefix
 from crossfire.core.providers import (
     AuthenticationError,
@@ -386,8 +387,6 @@ class TestCallWithRetry:
             )
 
     def test_transient_error_is_retried_then_succeeds(self, monkeypatch: pytest.MonkeyPatch):
-        import crossfire.core.providers as providers_module
-
         async def no_sleep(_seconds: float) -> None:
             return None
 
