@@ -221,6 +221,8 @@ class TUI:
 
         if cost_estimate is not None:
             table.add_row("Estimated cost", f"${cost_estimate.total_usd:.2f}")
+            if cost_estimate.missing_models:
+                table.add_row("Unpriced models", ", ".join(cost_estimate.missing_models))
             if cost_estimate.fetched_at:
                 table.add_row("Prices from", cost_estimate.fetched_at[:10])
         else:
@@ -232,6 +234,9 @@ class TUI:
             table.add_row("Cache read tokens", str(cost_summary.get("total_cache_read_tokens", 0)))
             table.add_row("Cache write tokens", str(cost_summary.get("total_cache_write_tokens", 0)))
             table.add_row("Total cost", f"${cost_summary.get('total_cost', 0):.4f}")
+            unpriced_models = cost_summary.get("unpriced_models", [])
+            if unpriced_models:
+                table.add_row("Unpriced models", ", ".join(unpriced_models))
 
         self.console.print(table)
 

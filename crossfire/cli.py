@@ -326,6 +326,8 @@ async def _execute(
 def _print_cost_estimate(cost_estimate: CostEstimate) -> None:
     """Prints the cost estimate to stderr (verbose mode fallback when TUI is not active)."""
     click.echo(f"Estimated cost: ${cost_estimate.total_usd:.2f}", err=True)
+    if cost_estimate.missing_models:
+        click.echo(f"Unpriced models: {', '.join(cost_estimate.missing_models)}", err=True)
     if cost_estimate.fetched_at:
         click.echo(f"Prices from: {cost_estimate.fetched_at[:10]}", err=True)
 

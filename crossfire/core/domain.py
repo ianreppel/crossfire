@@ -451,6 +451,7 @@ class CostEntry:
     cache_write_tokens: int = 0
     cost: float | None = None
     provider: str = ""
+    wire_model_id: str = ""
 
 
 @dataclass
@@ -477,6 +478,7 @@ class CostTracker:
         total_cache_read = 0
         total_cache_write = 0
         total_cost = 0.0
+        unpriced_models: set[str] = set()
 
         for entry in self.entries:
             total_input += entry.input_tokens
@@ -485,6 +487,8 @@ class CostTracker:
             total_cache_write += entry.cache_write_tokens
             if entry.cost is not None:
                 total_cost += entry.cost
+            else:
+                unpriced_models.add(f"{entry.provider}::{entry.wire_model_id or entry.model}")
 
             per_model[entry.model]["input_tokens"] += entry.input_tokens
             per_model[entry.model]["output_tokens"] += entry.output_tokens
@@ -500,4 +504,5 @@ class CostTracker:
             "total_cache_read_tokens": total_cache_read,
             "total_cache_write_tokens": total_cache_write,
             "total_cost": total_cost,
+            "unpriced_models": sorted(unpriced_models),
         }

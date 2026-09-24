@@ -105,7 +105,7 @@ api_key_env = "SYNTHETIC_API_KEY"
 "openai/gpt-6-astra"                = "syn:large:text"
 "openai/gpt-6-sol"                  = "syn:large:text"
 "openai/gpt-5.6-luna"               = "syn:large:text"
-"openai/gpt-6-luna"                 = "syn:small:text"
+"openai/gpt-6-luna"                 = "hf:deepseek-ai/DeepSeek-V4.1-Flash"
 "z-ai/glm-5.3"                      = "hf:zai-org/GLM-5.3-Flash"
 "z-ai/glm-5.3-flash"                = "hf:zai-org/GLM-5.3-Flash"
 "deepseek/deepseek-v4.1-flash"      = "hf:deepseek-ai/DeepSeek-V4.1-Flash"
@@ -128,7 +128,7 @@ names = [
     "moonshotai/kimi-k3",                # strong open, different lab
 ]
 context_window = 200000
-max_output_tokens = 16000
+max_output_tokens = 24000
 
 [models.reviewers]
 # Reviewers are where the adversarial value lives, and they are the most-called
@@ -154,7 +154,7 @@ names = [
     "anthropic/claude-fable-5.1",        # expensive thorough critic (Zen)
 ]
 context_window = 200000
-max_output_tokens = 8000
+max_output_tokens = 20000
 
 [models.enricher]
 # Enrichment is a short rewrite, not a reasoning task. A responses-protocol model with reasoning effort

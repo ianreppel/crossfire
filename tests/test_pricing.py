@@ -9,11 +9,14 @@ from typing import Any
 import pytest
 
 from crossfire.core.domain import (
+    CostEntry,
+    CostTracker,
     CrossfireConfiguration,
     LimitsConfiguration,
     Mode,
     ModelGroup,
     ProviderConfiguration,
+    Role,
     RunParameters,
     SearchConfiguration,
     Task,
@@ -30,6 +33,28 @@ from crossfire.core.pricing import (
     save_pricing,
 )
 from crossfire.core.providers import Usage
+
+
+class TestCostTracker:
+    def test_summary_identifies_calls_without_pricing(self):
+        tracker = CostTracker()
+        tracker.record(
+            CostEntry(
+                model="anthropic/claude-opus-5.5",
+                role=Role.SYNTHESIZER,
+                round=1,
+                input_tokens=100,
+                output_tokens=50,
+                cost=None,
+                provider="synthetic",
+                wire_model_id="syn:large:text",
+            )
+        )
+
+        summary = tracker.summarize()
+
+        assert summary["total_cost"] == 0.0
+        assert summary["unpriced_models"] == ["synthetic::syn:large:text"]
 
 
 class TestParsePricingEntry:

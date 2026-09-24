@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import pytest
 
+from crossfire.core.archive import RunArchive
 from crossfire.core.domain import (
+    Candidate,
     CrossfireConfiguration,
     LimitsConfiguration,
     Mode,
@@ -141,6 +143,46 @@ class TestReviewerAssignment:
 
 
 class TestRoundFailure:
+    @pytest.mark.asyncio
+    async def test_incomplete_reviews_are_archived_before_round_fails(self, clean_logger, tmp_path):
+        configuration = CrossfireConfiguration(
+            generators=ModelGroup(names=("gen-a",), context_window=16000),
+            reviewers=ModelGroup(names=("rev-a",), context_window=16000),
+            synthesizer=ModelGroup(names=("synth-a",), context_window=32000),
+            search=SearchConfiguration(enabled=False),
+        )
+        parameters = RunParameters(
+            mode=Mode.RESEARCH,
+            task=Task(instruction="Test", context=""),
+            num_generators=2,
+            num_reviewers_per_candidate=1,
+            num_rounds=1,
+            dry_run=True,
+        )
+        capture = LogCapture()
+        clean_logger.addHandler(capture)
+        orchestrator = Orchestrator(configuration, parameters, archive=RunArchive(tmp_path))
+
+        async def fake_generation(round_num, previous_synthesis):
+            return [
+                Candidate(text="candidate one", model="gen-a", round=round_num, index=0),
+                Candidate(text="candidate two", model="gen-a", round=round_num, index=1),
+            ]
+
+        async def partial_review(round_num, candidates):
+            return [Review(text="partial review", model="rev-a", round=round_num, candidate_index=0)]
+
+        orchestrator._run_generation = fake_generation  # type: ignore[assignment]
+        orchestrator._run_review = partial_review  # type: ignore[assignment]
+
+        result = await orchestrator._run_round(1, "")
+
+        assert result is None
+        assert (tmp_path / "round-1" / "review-c0-rev-a.md").read_text() == "partial review"
+        failures = [event for event in capture.records if event.get("event") == "round_failed"]
+        assert failures[-1]["reason"] == "incomplete_reviews"
+        assert failures[-1]["details"] == "No reviews for candidates [1]"
+
     @pytest.mark.asyncio
     async def test_consecutive_round_failures_abort_run(self, clean_logger):
         """Uses 3 reviewers for a 2*2=4 requirement to force runtime failures (bypasses validation)."""

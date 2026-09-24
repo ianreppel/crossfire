@@ -1100,6 +1100,7 @@ class Orchestrator:
                 cache_write_tokens=usage.cache_write_tokens,
                 cost=cost,
                 provider=provider.name,
+                wire_model_id=wire_model_id,
             )
         )
 
