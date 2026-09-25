@@ -129,6 +129,21 @@ def resolve_protocol(provider: ProviderConfiguration, wire_model_id: str) -> Pro
     return "chat"
 
 
+def _openrouter_routing(provider: ProviderConfiguration) -> dict[str, Any]:
+    """Builds OpenRouter's per-request provider routing object from the gateway's privacy settings.
+
+    ``data_collection: "deny"`` keeps a request off providers that store data or train on it, and ``zdr: true``
+    keeps it on endpoints that retain nothing. Both are filters rather than promises: when no endpoint for the
+    model qualifies, OpenRouter fails the request instead of routing it somewhere the filters exclude.
+    """
+    routing: dict[str, Any] = {}
+    if provider.deny_data_collection:
+        routing["data_collection"] = "deny"
+    if provider.require_zdr:
+        routing["zdr"] = True
+    return routing
+
+
 def build_request(
     *,
     provider: ProviderConfiguration,
@@ -152,6 +167,11 @@ def build_request(
         headers["x-opencode-session"] = session_id
 
     payload: dict[str, Any] = {"model": wire_model_id}
+
+    if provider.name == "openrouter":
+        routing = _openrouter_routing(provider)
+        if routing:
+            payload["provider"] = routing
 
     if protocol == "chat":
         headers["Authorization"] = f"Bearer {api_key}"

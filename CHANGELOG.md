@@ -1,5 +1,12 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- OpenRouter requests carry `provider.data_collection = "deny"` and `provider.zdr = true`, so the gateway keeps them off providers that train on prompts and off endpoints that retain them.
+- A data-policy guard refuses a run whose bench names a model the gateway documents as training on prompts, and logs at run start when the chosen models retain prompts.
+- `deny_data_collection`, `require_zdr`, and `allow_training_models` per provider in `crossfire.toml`, all defaulting to the safe setting.
+
 ## [0.3.0] - 2026-09-24
 
 Crossfire supports OpenCode Zen, OpenCode Go, OpenRouter, and Synthetic. Zen is the default gateway.

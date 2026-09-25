@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import tomllib
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -121,19 +122,21 @@ def _parse_providers(raw: dict[str, Any]) -> tuple[ProviderConfiguration, ...]:
                 provider_data.get("requires_session", base_provider.requires_session if base_provider else False)
             ),
             model_ids=model_ids,
+            deny_data_collection=bool(
+                provider_data.get("deny_data_collection", base_provider.deny_data_collection if base_provider else True)
+            ),
+            require_zdr=bool(provider_data.get("require_zdr", base_provider.require_zdr if base_provider else True)),
+            allow_training_models=bool(
+                provider_data.get(
+                    "allow_training_models", base_provider.allow_training_models if base_provider else False
+                )
+            ),
         )
 
     # Backwards compatibility: an [openrouter] section with a custom api_key_env still wins.
     legacy_api_key_env = raw.get("openrouter", {}).get("api_key_env")
     if legacy_api_key_env and "openrouter" in providers:
-        existing_provider = providers["openrouter"]
-        providers["openrouter"] = ProviderConfiguration(
-            name=existing_provider.name,
-            base_url=existing_provider.base_url,
-            api_key_env=str(legacy_api_key_env),
-            requires_session=existing_provider.requires_session,
-            model_ids=existing_provider.model_ids,
-        )
+        providers["openrouter"] = replace(providers["openrouter"], api_key_env=str(legacy_api_key_env))
 
     return tuple(providers.values())
 

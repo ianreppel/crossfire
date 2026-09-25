@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 
 import httpx
 import pytest
@@ -174,6 +175,47 @@ class TestBuildRequest:
         assert payload["input"] == "usr"
         assert payload["max_output_tokens"] == 128
         assert payload["reasoning"] == {"effort": "low"}
+
+    @pytest.mark.parametrize(
+        ("deny_data_collection", "require_zdr", "expected"),
+        [
+            (True, True, {"data_collection": "deny", "zdr": True}),
+            (True, False, {"data_collection": "deny"}),
+            (False, True, {"zdr": True}),
+            (False, False, None),
+        ],
+    )
+    def test_openrouter_routing_follows_the_privacy_settings(
+        self, deny_data_collection: bool, require_zdr: bool, expected: dict[str, object] | None
+    ):
+        provider = replace(_OPENROUTER, deny_data_collection=deny_data_collection, require_zdr=require_zdr)
+        _, _, payload = build_request(
+            provider=provider,
+            protocol="chat",
+            wire_model_id="anthropic/claude-sonnet-4",
+            system_prompt="sys",
+            user_prompt="usr",
+            api_key="k",
+            max_tokens=64,
+            temperature=0.2,
+            session_id="session-1",
+        )
+        assert payload.get("provider") == expected
+
+    @pytest.mark.parametrize("provider", [_OPENCODE, _SYNTHETIC])
+    def test_other_gateways_carry_no_routing_object(self, provider: ProviderConfiguration):
+        _, _, payload = build_request(
+            provider=provider,
+            protocol="chat",
+            wire_model_id="glm-5.3" if provider is _OPENCODE else "syn:large:text",
+            system_prompt="sys",
+            user_prompt="usr",
+            api_key="k",
+            max_tokens=64,
+            temperature=0.2,
+            session_id="session-1",
+        )
+        assert "provider" not in payload
 
 
 class TestExtractResponseText:

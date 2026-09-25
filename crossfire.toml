@@ -14,9 +14,18 @@
 #     synthetic     SYNTHETIC_API_KEY      (https://synthetic.new; OpenAI-compatible)
 #
 #   Model slugs below are the neutral (OpenRouter-style) names. Each gateway maps
-#   them to its wire IDs via [providers.*.model_ids]. Slugs absent from a map are
+#   them to its own wire IDs via [providers.*.model_ids]. Slugs absent from a map are
 #   passed through unchanged, so OpenRouter needs no map at all.
 #
+# Data policy:
+#
+#   Prompts are never meant to be training data. OpenRouter enforces that per request
+#   (see [providers.openrouter] below); the OpenCode gateways accept no such switch, so
+#   Crossfire refuses any model their published policy says trains on prompts, and logs
+#   at run start when a model retains what you send. `allow_training_models = true` under
+#   a provider opts back in. See the Data policy section of the README.
+#
+
 # Model selection philosophy:
 #
 #   Highest-frequency roles get the cheapest capable models, ordered cheapest
@@ -88,6 +97,12 @@ requires_session = true
 
 [providers.openrouter]
 api_key_env = "OPENROUTER_API_KEY"
+# The only gateway that takes data-policy switches per request: every call carries
+# provider.data_collection = "deny" and provider.zdr = true, so OpenRouter keeps the request off providers
+# that train on it and off endpoints that retain it. Set either to false to relax the filter, which also
+# re-admits providers that keep prompts.
+require_zdr = true
+deny_data_collection = true
 
 # ---------------------------------------------------------------------------
 # Synthetic (https://synthetic.new). OpenAI-compatible, so it speaks chat.

@@ -109,6 +109,47 @@ api_key_env = "CUSTOM_KEY"
         on_openrouter = replace(mixed, provider="openrouter").resolve_for_mode("code")
         assert on_openrouter.generators.names == ("openrouter:perplexity/sonar-pro", "z-ai/glm-5.3")
 
+    def test_privacy_settings_default_to_safe_and_are_overridable(self, tmp_path: Path):
+        defaults = load_configuration(configuration_path=Path("/nonexistent/crossfire.toml"))
+        openrouter = next(provider for provider in defaults.providers if provider.name == "openrouter")
+        assert openrouter.deny_data_collection is True
+        assert openrouter.require_zdr is True
+        assert openrouter.allow_training_models is False
+
+        configuration_file = tmp_path / "crossfire.toml"
+        configuration_file.write_text(
+            """
+[providers.openrouter]
+require_zdr = false
+
+[providers.opencode]
+allow_training_models = true
+"""
+        )
+        configuration = load_configuration(configuration_path=configuration_file)
+        relaxed = next(provider for provider in configuration.providers if provider.name == "openrouter")
+        assert relaxed.require_zdr is False
+        assert relaxed.deny_data_collection is True
+        permitted = next(provider for provider in configuration.providers if provider.name == "opencode")
+        assert permitted.allow_training_models is True
+
+    def test_legacy_openrouter_section_keeps_privacy_settings(self, tmp_path: Path):
+        configuration_file = tmp_path / "crossfire.toml"
+        configuration_file.write_text(
+            """
+[providers.openrouter]
+require_zdr = false
+
+[openrouter]
+api_key_env = "MY_KEY"
+"""
+        )
+        configuration = load_configuration(configuration_path=configuration_file)
+        openrouter = next(provider for provider in configuration.providers if provider.name == "openrouter")
+        assert openrouter.api_key_env == "MY_KEY"
+        assert openrouter.require_zdr is False
+        assert openrouter.deny_data_collection is True
+
     def test_api_key_follows_the_selected_provider(self, monkeypatch):
         configuration = load_configuration(configuration_path=Path("/nonexistent/crossfire.toml"))
         monkeypatch.setenv("OPENCODE_API_KEY", "oc-key")

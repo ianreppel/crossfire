@@ -160,6 +160,10 @@ def log_retry(*, round: int, role: Role, model: str, attempt: int, reason: str) 
     _emit("retry", round=round, role=role, model=model, attempt=attempt, reason=reason)
 
 
+def log_data_policy_notice(*, notice: str) -> None:
+    _emit("data_policy_notice", level=logging.WARNING, notice=notice)
+
+
 def log_cost_summary(summary: dict[str, Any]) -> None:
     _emit("cost_summary", **summary)
 

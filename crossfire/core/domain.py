@@ -8,6 +8,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field, replace
 from typing import Any
 
+from crossfire.core import privacy
 from crossfire.core.tokens import compute_token_budget
 
 
@@ -60,10 +61,15 @@ def _model_targets_provider(model: str, provider_name: str, provider_names: set[
 
 @dataclass(frozen=True)
 class ProviderConfiguration:
-    """Connection details and model alias table for a single inference gateway.
+    """Connection details, model alias table, and data policy for a single inference gateway.
 
     ``model_ids`` maps a neutral model slug (one that works on every gateway) to the provider's wire model ID.
     Slugs absent from the table are passed through unchanged, which is what makes OpenRouter lists work as-is.
+
+    The three privacy fields default to the safe setting. ``deny_data_collection`` and ``require_zdr`` become
+    OpenRouter's per-request routing filters, which are the only such knobs any gateway exposes; on the OpenCode
+    gateways they record intent and change nothing on the wire, where :mod:`crossfire.core.privacy` enforces the
+    policy instead by refusing models that train. ``allow_training_models`` is the opt-out from that refusal.
     """
 
     name: str
@@ -71,6 +77,9 @@ class ProviderConfiguration:
     api_key_env: str
     requires_session: bool = False
     model_ids: tuple[tuple[str, str], ...] = ()
+    deny_data_collection: bool = True
+    require_zdr: bool = True
+    allow_training_models: bool = False
 
     def resolve_wire_model_id(self, model: str) -> str:
         """Returns the provider's wire model ID for a neutral *model* slug.
@@ -342,6 +351,22 @@ class CrossfireConfiguration:
         )
         return resolved.for_active_provider()
 
+    def data_policy_notices(self) -> list[str]:
+        """Returns what the active gateway does with prompts on the models this run would use.
+
+        These are notices rather than errors: no gateway lets a request waive its own retention, so a run against
+        a retaining model is still a valid run. Training is a different matter, and :meth:`validate` refuses it.
+        """
+        provider = self.active_provider()
+        notices: list[str] = []
+        for group in (self.enricher, self.generators, self.reviewers, self.synthesizer):
+            wire_model_ids = [provider.resolve_wire_model_id(model) for model in group.names]
+            notices.extend(privacy.retention_notices(provider.name, wire_model_ids))
+        gateway_note = privacy.gateway_retention_note(provider.name)
+        if gateway_note:
+            notices.append(gateway_note)
+        return sorted(set(notices))
+
     def validate(
         self,
         num_generators: int,
@@ -349,6 +374,7 @@ class CrossfireConfiguration:
     ) -> list[str]:
         """Returns a list of validation errors (empty = valid)."""
         errors: list[str] = []
+        active_provider = self.active_provider()
 
         provider_names = sorted(provider.name for provider in self.providers)
         if self.provider not in provider_names:
@@ -376,6 +402,13 @@ class CrossfireConfiguration:
             ("reviewers", self.reviewers),
             ("synthesizer", self.synthesizer),
         ]:
+            if not active_provider.allow_training_models:
+                wire_model_ids = [active_provider.resolve_wire_model_id(model) for model in group.names]
+                errors.extend(
+                    f"{label}: {violation}"
+                    for violation in privacy.training_violations(active_provider.name, wire_model_ids)
+                )
+
             if group.context_window <= 0:
                 errors.append(f"{label}.context_window must be positive")
 

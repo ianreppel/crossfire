@@ -152,6 +152,11 @@ class Orchestrator:
         if errors:
             raise ValueError("; ".join(errors))
 
+        # No gateway lets a request waive its own retention, so the best Crossfire can do on the OpenCode
+        # gateways is say plainly what the chosen models do with the prompts.
+        for notice in self.configuration.data_policy_notices():
+            log.log_data_policy_notice(notice=notice)
+
         if not self.parameters.dry_run:
             self._api_key = get_api_key(self.configuration)
             self._http_client = httpx.AsyncClient(timeout=self.configuration.limits.http_timeout)

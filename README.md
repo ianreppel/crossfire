@@ -161,6 +161,25 @@ See [`crossfire.toml`](crossfire.toml) for the full configuration with all 5 mod
 
 OpenRouter and Synthetic use OpenAI-compatible chat. OpenCode Zen and Go choose chat, messages, or responses by model family.
 
+### Data policy
+Crossfire asks the gateway not to train on your prompts, and where the gateway allows it, not to retain them.
+How much of that it can enforce is the gateway's decision, and the four differ:
+
+| Gateway | Enforcement | Limit |
+|:--------|:-------------|:------|
+| `openrouter` | Every request carries `provider.data_collection: "deny"` and `provider.zdr: true` | The filters constrain provider routing. OpenRouter's own prompt storage stays empty unless you opt in to Input & Output Logging or to product-improvement use of your inputs, both off by default. |
+| `opencode` | The run is refused when a bench model is one Zen documents as training on prompts, which it lists as exceptions to its zero-retention pledge | Zen takes no per-request switch, and retains requests it forwards to the OpenAI and Anthropic APIs for 30 days. |
+| `opencode-go` | The same refusal, against Go's published per-model table | No per-request switch. Grok 4.6, Grok 4.7, GPT-6 Luna, and GPT-5.6 Luna retain prompts for 30 days; every other Go model is zero-retention. |
+| `synthetic` | Nothing to enforce | Synthetic states that it never trains on prompts and deletes API prompt data once the call completes. |
+
+The OpenCode gateways have no switch to waive, so Crossfire logs the retention that applies to the models in the bench when a run starts.
+The sources are [OpenCode Zen](https://opencode.ai/docs/zen/#privacy), [OpenCode Go](https://opencode.ai/docs/go/#privacy), [OpenRouter provider routing](https://openrouter.ai/docs/guides/routing/provider-selection), and [Synthetic's privacy policy](https://synthetic.new/policies/privacy).
+
+`allow_training_models = true` under `[providers.<name>]` overrides the refusal of a training model.
+`require_zdr = false` and `deny_data_collection = false` under `[providers.openrouter]` relax the routing filters.
+Both filters fail a request rather than route around the constraint, so a model with no qualifying endpoint returns an error instead of quietly losing its ZDR guarantee.
+The request-level `zdr` flag ORs with your OpenRouter account-wide and guardrail settings, so it can enforce ZDR but never relax it.
+
 ## Execution model
 Each round has three sequential phases:
 
@@ -238,8 +257,8 @@ You can filter these with standard tools:
 uv run crossfire run ... -v 2>&1 | jq 'select(.event == "synthesis_decision")'
 ```
 
-Every response's token usage, including cache-read and cache-write tokens, is captured.
-OpenRouter reports cost directly; OpenCode Zen, Go, and Synthetic costs are derived from `pricing.json`.
+Every response's token usage, including caching, is captured.
+OpenRouter reports cost directly, whereas OpenCode Zen/Go and Synthetic costs are derived from `pricing.json`.
 A `cost_summary` event is emitted at the end of each run with per-model and aggregate totals.
 
 ## Development
