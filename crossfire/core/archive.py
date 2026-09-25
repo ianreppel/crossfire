@@ -8,8 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from crossfire.core import logging as log
-from crossfire.core.domain import Candidate, Review, RunParameters, SynthesisResult
-from crossfire.core.openrouter import strip_model_prefix
+from crossfire.core.domain import Candidate, Review, RunParameters, SynthesisResult, strip_model_prefix
 
 _UNSAFE_FILENAME_CHARS_REGEX = re.compile(r"[^A-Za-z0-9._-]")
 

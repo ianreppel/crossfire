@@ -27,8 +27,7 @@ def get_search_api_key() -> str:
     if not key:
         raise RuntimeError(
             exclaim(
-                "Search is enabled but you did not set TAVILY_API_KEY. "
-                "Export it or disable search in crossfire.toml."
+                "Search is enabled but you did not set TAVILY_API_KEY. Export it or disable search in crossfire.toml."
             )
         )
     return key

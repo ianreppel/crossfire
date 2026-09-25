@@ -43,8 +43,18 @@ uv sync
 
 ### Set up API keys
 
+Crossfire uses OpenCode Zen by default. Select another gateway with `--provider` or the `provider` key in `crossfire.toml`.
+
+| Provider | Key |
+|:---------|:----|
+| `opencode` and `opencode-go` | `OPENCODE_API_KEY` |
+| `openrouter` | `OPENROUTER_API_KEY` |
+| `synthetic` | `SYNTHETIC_API_KEY` |
+
 ```bash
+export OPENCODE_API_KEY="..."
 export OPENROUTER_API_KEY="sk-or-..."
+export SYNTHETIC_API_KEY="syn-..."
 export TAVILY_API_KEY="tvly-..."      # only needed if search.enabled = true in crossfire.toml
 ```
 
@@ -77,6 +87,7 @@ uv run crossfire run \
 | `--output` | Additional path to write the final output to | none |
 | `--run-dir` | Archive directory for all run artifacts | `runs/<timestamp>` |
 | `--config` | Path to `crossfire.toml` | auto-detected |
+| `--provider` | `opencode`, `opencode-go`, `openrouter`, or `synthetic` | `crossfire.toml` value (`opencode`) |
 | `--dry-run` | Simulate without network calls | false |
 
 #### Instruction vs context
@@ -97,14 +108,15 @@ uv run crossfire run \
 ```
 
 ### Cost estimation
-Cost estimation in ``--dry-run`` requires current model prices from OpenRouter.
-These can be grabbed and stored in `pricing.json` with the following command:
+Cost estimation in ``--dry-run`` requires current model prices.
+`crossfire prices` fetches prices from OpenRouter and models.dev (OpenCode Zen, OpenCode Go, and Synthetic) and stores them in `pricing.json`:
 
 ```bash
 uv run crossfire prices
 ```
 
-Since it fetches pricing on _all_ OpenRouter models, we can add moves to `crossfire.toml` without re-fetching.
+Prices are keyed by gateway, so `--provider` selects the matching rates.
+Both catalogues are fetched wholesale, so you can edit `crossfire.toml` without re-fetching.
 
 ### Clean up
 Remove all generated and cached files (runs, `.venv`, caches, bytecode):
@@ -135,12 +147,38 @@ Any missing roles fall back to the global default.
 
 Cross-group overlap is allowed: a model may both generate and review in the same round, as they do not share prompts or contexts.
 
+Model names in `[models.*]` are neutral slugs.
+`[providers.<name>.model_ids]` maps them to each gateway's wire IDs.
+Prefix a model with a gateway, such as `openrouter:perplexity/sonar-pro`, to pin it to that provider.
+Synthetic's `syn:*` aliases keep the call stable when its routed model changes.
+
 ## Configuration
 Crossfire is configured via `crossfire.toml` at the project root.
 The file defines four model groups (`enricher`, `generators`, `reviewers`, `synthesizer`), each with a list of model IDs, a context window, and maximum output tokens.
 Per-mode overrides go in `[modes.<mode>.*]` sections.
 
 See [`crossfire.toml`](crossfire.toml) for the full configuration with all 5 modes, per-model context window overrides, and detailed comments explaining the model selection rationale.
+
+OpenRouter and Synthetic use OpenAI-compatible chat. OpenCode Zen and Go choose chat, messages, or responses by model family.
+
+### Data policy
+Crossfire asks the gateway not to train on your prompts, and where the gateway allows it, not to retain them.
+How much of that it can enforce is the gateway's decision, and the four differ:
+
+| Gateway | Enforcement | Limit |
+|:--------|:-------------|:------|
+| `openrouter` | Every request carries `provider.data_collection: "deny"` and `provider.zdr: true` | The filters constrain provider routing. OpenRouter's own prompt storage stays empty unless you opt in to Input & Output Logging or to product-improvement use of your inputs, both off by default. |
+| `opencode` | The run is refused when a bench model is one Zen documents as training on prompts, which it lists as exceptions to its zero-retention pledge | Zen takes no per-request switch, and retains requests it forwards to the OpenAI and Anthropic APIs for 30 days. |
+| `opencode-go` | The same refusal, against Go's published per-model table | No per-request switch. Grok 4.6, Grok 4.7, GPT-6 Luna, and GPT-5.6 Luna retain prompts for 30 days; every other Go model is zero-retention. |
+| `synthetic` | Nothing to enforce | Synthetic states that it never trains on prompts and deletes API prompt data once the call completes. |
+
+The OpenCode gateways have no switch to waive, so Crossfire logs the retention that applies to the models in the bench when a run starts.
+The sources are [OpenCode Zen](https://opencode.ai/docs/zen/#privacy), [OpenCode Go](https://opencode.ai/docs/go/#privacy), [OpenRouter provider routing](https://openrouter.ai/docs/guides/routing/provider-selection), and [Synthetic's privacy policy](https://synthetic.new/policies/privacy).
+
+`allow_training_models = true` under `[providers.<name>]` overrides the refusal of a training model.
+`require_zdr = false` and `deny_data_collection = false` under `[providers.openrouter]` relax the routing filters.
+Both filters fail a request rather than route around the constraint, so a model with no qualifying endpoint returns an error instead of quietly losing its ZDR guarantee.
+The request-level `zdr` flag ORs with your OpenRouter account-wide and guardrail settings, so it can enforce ZDR but never relax it.
 
 ## Execution model
 Each round has three sequential phases:
@@ -172,6 +210,7 @@ The refusal is logged as a `model_dropped` event with reason `refusal`.
 If a synthesis is itself a refusal or regression (detected by the same refusal patterns), Crossfire discards it and carries forward the previous round's synthesis.
 This prevents a bad late round from overwriting good earlier output.
 The event is logged as `synthesis_regression`.
+If a synthesizer refuses a request or returns no text, Crossfire tries the next model in the synthesizer pool.
 
 ### Systematic review protocols
 **Code mode** catches subtle issues that often slip through regular reviews:
@@ -218,7 +257,8 @@ You can filter these with standard tools:
 uv run crossfire run ... -v 2>&1 | jq 'select(.event == "synthesis_decision")'
 ```
 
-Every OpenRouter response's token usage and cost metadata is captured.
+Every response's token usage, including caching, is captured.
+OpenRouter reports cost directly, whereas OpenCode Zen/Go and Synthetic costs are derived from `pricing.json`.
 A `cost_summary` event is emitted at the end of each run with per-model and aggregate totals.
 
 ## Development
@@ -273,12 +313,12 @@ crossfire/
 │   │   ├── logging.py        # structured JSON-line event logging
 │   │   ├── tokens.py         # tiktoken-based estimation
 │   │   ├── compression.py    # extractive compression and prompt fitting
-│   │   ├── openrouter.py     # OpenRouter HTTP client with retry
+│   │   ├── providers.py      # multi-gateway HTTP client and protocol adapters
 │   │   ├── simulation.py     # deterministic fakes for dry-run mode
 │   │   ├── progress.py       # progress reporting
 │   │   ├── reviewers.py      # reviewer-to-candidate assignment
 │   │   ├── search.py         # search integration with Tavily
-│   │   ├── pricing.py        # OpenRouter pricing cache and cost estimation
+│   │   ├── pricing.py        # multi-provider pricing cache and cost estimation
 │   │   ├── exclamations.py   # The Simpsons prefixes for error messages
 │   │   └── archive.py        # disk archival
 │   ├── ui/
@@ -297,8 +337,9 @@ crossfire/
 Counts use the `cl100k_base` tokenizer (via tiktoken) as a proxy for all providers.
 Actual token counts may differ for non-OpenAI models.
 
-**OpenRouter is the only LLM provider.**
-Direct API calls to Anthropic, Google, or OpenAI are not supported.
+**Gateway coverage.**
+OpenCode Zen, OpenCode Go, OpenRouter, and Synthetic are supported.
+Google Gemini uses a wire protocol Crossfire does not implement, so Gemini models are rejected.
 
 **Tavily is the only search provider.**
 A missing `TAVILY_API_KEY` fails at startup when `search.enabled = true`.
@@ -309,9 +350,10 @@ When prompts exceed the token budget, Crossfire drops sections and sentences rat
 The task instruction is _never_ compressed.
 
 **Cost estimates are approximate.**
-The dry-run estimate uses fixed output-token defaults (~5,000 tokens per generator/synthesizer call, ~2,000 per reviewer) and average pricing across each model group.
+The dry-run estimate uses fixed output-token defaults (~5,000 tokens per generator/synthesizer call, ~2,000 per reviewer) and the models selected for the run.
 It does not predict early stopping or actual output lengths, so it typically overestimates by 2-4x for runs that stop early.
 If the instruction contains an explicit word or page count, the estimate uses that instead, but the regex may also match counts that describe the input rather than the desired output.
+Synthetic's `syn:*` aliases have no published prices in models.dev, so their costs are excluded from estimates and listed as unpriced.
 
 **No streaming.**
 Responses are received in full.

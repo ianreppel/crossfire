@@ -4,17 +4,23 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 import httpx
 
-from crossfire.core.domain import CostEstimate, CrossfireConfiguration, ModelGroup, RunParameters
-from crossfire.core.openrouter import strip_model_prefix
+from crossfire.core.domain import CostEstimate, CrossfireConfiguration, ModelGroup, RunParameters, strip_model_prefix
+from crossfire.core.reviewers import assign_reviewers
 from crossfire.core.tokens import estimate_tokens
 
 OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
+MODELS_DEV_URL = "https://models.dev/api.json"
 PRICING_FILENAME = "pricing.json"
+
+# models.dev reports prices per million tokens; pricing.json stores per-token values.
+_PER_MILLION = 1_000_000
+_MODELS_DEV_PROVIDER_IDS = ("opencode", "opencode-go", "synthetic")
 
 # Default output tokens per call when the instruction has no explicit length signal.
 # ~3,500 words: a substantial article, neither a tweet nor a novel.
@@ -50,13 +56,27 @@ def _parse_pricing_entry(raw_pricing: Any) -> tuple[float, float]:
 
 
 def parse_api_response(data: dict[str, Any]) -> dict[str, tuple[float, float]]:
-    """Parses the OpenRouter ``/api/v1/models`` response into a ``{model_id: (prompt, completion)}`` map."""
+    """Parses the OpenRouter ``/api/v1/models`` response into provider-qualified price entries."""
     models: dict[str, tuple[float, float]] = {}
     for entry in data.get("data", []):
         model_id: str = entry.get("id", "")
         if not model_id:
             continue
-        models[model_id] = _parse_pricing_entry(entry.get("pricing"))
+        models[f"openrouter::{model_id}"] = _parse_pricing_entry(entry.get("pricing"))
+    return models
+
+
+def parse_models_dev_response(data: dict[str, Any]) -> dict[str, tuple[float, float]]:
+    """Parses the models.dev catalog into provider-qualified price entries for Zen, Go and Synthetic."""
+    models: dict[str, tuple[float, float]] = {}
+    for provider_id in _MODELS_DEV_PROVIDER_IDS:
+        provider_data = data.get(provider_id, {})
+        for model_id, entry in provider_data.get("models", {}).items():
+            cost = entry.get("cost") or {}
+            models[f"{provider_id}::{model_id}"] = (
+                float(cost.get("input", 0) or 0) / _PER_MILLION,
+                float(cost.get("output", 0) or 0) / _PER_MILLION,
+            )
     return models
 
 
@@ -64,6 +84,15 @@ def fetch_pricing() -> dict[str, Any]:
     """Fetches all model pricing from OpenRouter (synchronous)."""
     with httpx.Client(timeout=30.0) as client:
         response = client.get(OPENROUTER_MODELS_URL)
+        response.raise_for_status()
+        result: dict[str, Any] = response.json()
+        return result
+
+
+def fetch_models_dev_pricing() -> dict[str, Any]:
+    """Fetches the models.dev catalog (synchronous), the source of OpenCode Zen/Go pricing."""
+    with httpx.Client(timeout=60.0, headers={"User-Agent": "crossfire"}) as client:
+        response = client.get(MODELS_DEV_URL)
         response.raise_for_status()
         result: dict[str, Any] = response.json()
         return result
@@ -103,33 +132,64 @@ def load_pricing(path: Path) -> tuple[dict[str, tuple[float, float]], str]:
     return models, fetched_at
 
 
-def _average_group_price(
-    group: ModelGroup,
-    pricing: dict[str, tuple[float, float]],
-    missing: list[str],
-) -> tuple[float, float]:
-    """Computes the average per-token price across a model group.
+def _pricing_keys_for(
+    configuration: CrossfireConfiguration,
+) -> Callable[[str], tuple[str, ...]]:
+    """Builds a resolver returning the candidate pricing keys for a configured model name.
 
-    Returns ``(average_price_in, average_price_out)``.
-    Models missing from *pricing* are appended to *missing*.
+    Handles explicit ``provider:model`` overrides, neutral slugs, and a bare-slug fallback so older
+    pricing caches without provider qualification still resolve.
     """
-    total_price_in: float = 0.0
-    total_price_out: float = 0.0
-    found: int = 0
+    provider_names = {provider.name for provider in configuration.providers}
 
-    for name in group.names:
-        api_id: str = strip_model_prefix(name)
-        if api_id not in pricing:
-            missing.append(name)
-            continue
-        prompt_price, completion_price = pricing[api_id]
-        total_price_in += prompt_price
-        total_price_out += completion_price
-        found += 1
+    def keys_for(name: str) -> tuple[str, ...]:
+        prefix, separator, rest = name.partition(":")
+        if separator and prefix in provider_names:
+            provider_name, neutral = prefix, rest
+        else:
+            provider_name, neutral = configuration.provider, name
+        provider = next((p for p in configuration.providers if p.name == provider_name), None)
+        wire_model_id = provider.resolve_wire_model_id(neutral) if provider else strip_model_prefix(name)
+        return (f"{provider_name}::{wire_model_id}", wire_model_id, strip_model_prefix(name))
 
-    if found == 0:
-        return 0.0, 0.0
-    return total_price_in / found, total_price_out / found
+    return keys_for
+
+
+def _price_for(
+    name: str,
+    pricing: dict[str, tuple[float, float]],
+    keys_for: Callable[[str], tuple[str, ...]],
+) -> tuple[float, float] | None:
+    """Resolves the per-token price for *name*, trying each provider-qualified key in turn."""
+    return next((pricing[key] for key in keys_for(name) if key in pricing), None)
+
+
+def _selected_generator_models(group: ModelGroup, num_generators: int) -> list[str]:
+    """The generator models a run actually calls: the first *num_generators* of the cheapest-first list."""
+    if not group.names or num_generators <= 0:
+        return []
+    return [group.names[index % len(group.names)] for index in range(num_generators)]
+
+
+def _selected_reviewer_models(
+    group: ModelGroup,
+    num_candidates: int,
+    reviewers_per_candidate: int,
+    round_num: int,
+) -> list[str]:
+    """The reviewer models a round actually calls, mirroring the runtime window selection."""
+    if not group.names or num_candidates <= 0 or reviewers_per_candidate <= 0:
+        return []
+    assignments = assign_reviewers(
+        reviewers=group.names,
+        num_candidates=num_candidates,
+        num_reviewers_per_candidate=reviewers_per_candidate,
+        round_num=round_num,
+        models_used_this_round=set(),
+    )
+    if assignments is None:
+        return []
+    return [model for models in assignments.values() for model in models]
 
 
 def parse_length_hint(instruction: str) -> int | None:
@@ -159,15 +219,24 @@ def estimate_cost(
     pricing: dict[str, tuple[float, float]],
     fetched_at: str,
 ) -> CostEstimate:
-    """Estimates the cost of the run described by *configuration* and *parameters*."""
+    """Estimates the cost of a run by following the same model selection the runtime uses.
+
+    Prices the models each round actually picks (the first N generators, the reviewer window, the rotating synthesizer)
+    rather than averaging each group, so the estimate tracks the run instead of an abstract pool.
+    """
     missing: list[str] = []
+    keys_for = _pricing_keys_for(configuration)
+
+    def cost_of(model: str, input_tokens: int, output_tokens: int) -> float:
+        entry = _price_for(model, pricing, keys_for)
+        if entry is None:
+            missing.append(model)
+            return 0.0
+        input_price, output_price = entry
+        return input_tokens * input_price + output_tokens * output_price
+
     instruction_tokens: int = estimate_tokens(parameters.task.instruction)
     context_tokens: int = estimate_tokens(parameters.task.context) if parameters.task.context else 0
-
-    enricher_price_in, enricher_price_out = _average_group_price(configuration.enricher, pricing, missing)
-    generator_price_in, generator_price_out = _average_group_price(configuration.generators, pricing, missing)
-    reviewer_price_in, reviewer_price_out = _average_group_price(configuration.reviewers, pricing, missing)
-    synthesizer_price_in, synthesizer_price_out = _average_group_price(configuration.synthesizer, pricing, missing)
 
     hint: int | None = parse_length_hint(parameters.task.instruction)
     generator_output: int = min(hint or _DEFAULT_GENERATOR_OUTPUT, configuration.generators.max_output_tokens)
@@ -189,37 +258,31 @@ def estimate_cost(
 
     # -- enrichment: real input tokens --
     if enrichment_active:
-        enrichment_input: int = instruction_tokens + context_tokens
-        total += enrichment_input * enricher_price_in + enricher_output * enricher_price_out
+        total += cost_of(configuration.enricher.names[0], instruction_tokens + context_tokens, enricher_output)
 
-    # -- generation: real input for round 1, estimated for rounds 2+ --
+    generator_models: list[str] = _selected_generator_models(configuration.generators, num_generators)
     generation_input_round_1: int = effective_instruction_tokens + context_tokens
     generation_input_round_n: int = generation_input_round_1 + synthesizer_output
-
-    total += num_generators * (generation_input_round_1 * generator_price_in + generator_output * generator_price_out)
-    if num_rounds > 1:
-        total += (
-            num_generators
-            * (num_rounds - 1)
-            * (generation_input_round_n * generator_price_in + generator_output * generator_price_out)
-        )
-
-    # -- review: instruction (enriched if applicable) + estimated candidate output --
     reviewer_input: int = effective_instruction_tokens + generator_output
-    total += (
-        num_generators
-        * num_reviewers
-        * num_rounds
-        * (reviewer_input * reviewer_price_in + reviewer_output * reviewer_price_out)
-    )
-
-    # -- synthesis: instruction (enriched if applicable) + estimated candidates and reviews --
     synthesis_input: int = (
         effective_instruction_tokens
         + num_generators * generator_output
         + num_generators * num_reviewers * reviewer_output
     )
-    total += num_rounds * (synthesis_input * synthesizer_price_in + synthesizer_output * synthesizer_price_out)
+
+    for round_num in range(1, num_rounds + 1):
+        generation_input: int = generation_input_round_1 if round_num == 1 else generation_input_round_n
+        for model in generator_models:
+            total += cost_of(model, generation_input, generator_output)
+
+        for model in _selected_reviewer_models(configuration.reviewers, num_generators, num_reviewers, round_num):
+            total += cost_of(model, reviewer_input, reviewer_output)
+
+        if configuration.synthesizer.names:
+            synthesizer_model: str = configuration.synthesizer.names[
+                (round_num - 1) % len(configuration.synthesizer.names)
+            ]
+            total += cost_of(synthesizer_model, synthesis_input, synthesizer_output)
 
     unique_missing: tuple[str, ...] = tuple(dict.fromkeys(missing))
     return CostEstimate(

@@ -140,10 +140,6 @@ def log_round_failed(*, round: int, reason: str, details: str = "") -> None:
     _emit("round_failed", level=logging.WARNING, round=round, reason=reason, details=details)
 
 
-def log_run_failed(*, round: int, reason: str, details: str = "") -> None:
-    _emit("run_failed", level=logging.ERROR, round=round, reason=reason, details=details)
-
-
 def log_search_failure(*, round: int, role: Role, model: str, query: str, error: str) -> None:
     _emit(
         "search_failure",
@@ -158,6 +154,10 @@ def log_search_failure(*, round: int, role: Role, model: str, query: str, error:
 
 def log_retry(*, round: int, role: Role, model: str, attempt: int, reason: str) -> None:
     _emit("retry", round=round, role=role, model=model, attempt=attempt, reason=reason)
+
+
+def log_data_policy_notice(*, notice: str) -> None:
+    _emit("data_policy_notice", level=logging.WARNING, notice=notice)
 
 
 def log_cost_summary(summary: dict[str, Any]) -> None:

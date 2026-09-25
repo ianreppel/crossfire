@@ -17,8 +17,5 @@ runs/
 coverage.xml
 htmlcov/
 
-# Cursor
-.cursor/plans/
-
 # macOS
 .DS_Store
