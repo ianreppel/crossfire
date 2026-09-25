@@ -344,7 +344,7 @@ class Orchestrator:
                 self._archive.save_review(review)
 
         reviewed_candidates = {review.candidate_index for review in reviews}
-        if len(reviewed_candidates) < len(candidates):
+        if self.parameters.num_reviewers_per_candidate > 0 and len(reviewed_candidates) < len(candidates):
             missing = sorted({candidate.index for candidate in candidates} - reviewed_candidates)
             log.log_round_failed(
                 round=round_num,
@@ -921,8 +921,8 @@ class Orchestrator:
     ) -> str:
         """Compresses *user_prompt* to fit the token budget.
 
-        When *fatal_on_overflow* is True, raises RunFailedError (for synthesizer); otherwise raises RuntimeError (for
-        generator/reviewer).
+        Raises RunFailedError when *fatal_on_overflow* is True, otherwise RuntimeError. No current caller opts into
+        the fatal path: an overflow drops the model and the run degrades instead of aborting.
         """
         user_prompt, fits = compress_prompt_components(
             system_prompt=system_prompt,

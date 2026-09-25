@@ -322,7 +322,16 @@ class CrossfireConfiguration:
 
         def keep(group: ModelGroup) -> ModelGroup:
             names = tuple(name for name in group.names if _model_targets_provider(name, self.provider, provider_names))
-            return group if names == group.names else replace(group, names=names)
+            if names == group.names:
+                return group
+            context_windows = tuple(entry for entry in group.context_windows if entry[0] in names)
+            max_output_tokens_by_model = tuple(entry for entry in group.max_output_tokens_by_model if entry[0] in names)
+            return replace(
+                group,
+                names=names,
+                context_windows=context_windows,
+                max_output_tokens_by_model=max_output_tokens_by_model,
+            )
 
         return replace(
             self,

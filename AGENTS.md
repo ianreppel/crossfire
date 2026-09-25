@@ -25,6 +25,7 @@ Runtime configuration lives in `crossfire.toml`, and user-facing behaviour is do
 - Keep API keys in environment variables. Never hard-code, log, or archive them.
 - Treat authentication and credit errors as fatal. For model-specific refusal, truncation, and transient failures, use the established replacement and retry paths.
 - `MODE_RULES` in `crossfire/core/prompts.py` is the source of mode constraints. Do not duplicate those constraints in prompt builders.
+- Do not propose Jev (TypeSafe System One) for the judgment seams. Full-archive replay 2026-09-24 over 446 real docs (322 reviews, 100 candidates, 24 syntheses): at its best threshold, T=0.7 of swept 0.1–0.9, it exactly reproduced the free `_REFUSAL_REGEX` / `parse_review_verdict` heuristics — 0 action differences across 24 early-stop decision points, 0/124 on refusals. At the default T=0.5 its only intervention was harmful: it continued a write run whose 14 reviews all self-labelled. Re-propose only with new evidence, not on the strength of the model being newer.
 
 ## Python and tests
 

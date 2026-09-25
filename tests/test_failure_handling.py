@@ -184,6 +184,43 @@ class TestRoundFailure:
         assert failures[-1]["details"] == "No reviews for candidates [1]"
 
     @pytest.mark.asyncio
+    async def test_zero_reviewers_round_proceeds_to_synthesis(self, clean_logger):
+        """Reviews disabled: the coverage check does not apply and the round synthesizes."""
+        configuration = CrossfireConfiguration(
+            generators=ModelGroup(names=("gen-a",), context_window=16000),
+            reviewers=ModelGroup(names=("rev-a",), context_window=16000),
+            synthesizer=ModelGroup(names=("synth-a",), context_window=32000),
+            search=SearchConfiguration(enabled=False),
+        )
+        parameters = RunParameters(
+            mode=Mode.RESEARCH,
+            task=Task(instruction="Test", context=""),
+            num_generators=1,
+            num_reviewers_per_candidate=0,
+            num_rounds=1,
+            dry_run=True,
+        )
+        capture = LogCapture()
+        clean_logger.addHandler(capture)
+        orchestrator = Orchestrator(configuration, parameters)
+
+        async def fake_generation(round_num, previous_synthesis):
+            return [Candidate(text="candidate one", model="gen-a", round=round_num, index=0)]
+
+        async def fake_synthesis(round_num, candidates, reviews):
+            return SynthesisResult(text="synthesized", model="synth-a", round=round_num)
+
+        orchestrator._run_generation = fake_generation  # type: ignore[assignment]
+        orchestrator._run_synthesis = fake_synthesis  # type: ignore[assignment]
+
+        result = await orchestrator._run_round(1, "")
+
+        assert result is not None
+        assert result.synthesis_text == "synthesized"
+        failures = [event for event in capture.records if event.get("event") == "round_failed"]
+        assert failures == []
+
+    @pytest.mark.asyncio
     async def test_consecutive_round_failures_abort_run(self, clean_logger):
         """Uses 3 reviewers for a 2*2=4 requirement to force runtime failures (bypasses validation)."""
         configuration = CrossfireConfiguration(

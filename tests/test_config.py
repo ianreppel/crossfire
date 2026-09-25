@@ -109,6 +109,29 @@ api_key_env = "CUSTOM_KEY"
         on_openrouter = replace(mixed, provider="openrouter").resolve_for_mode("code")
         assert on_openrouter.generators.names == ("openrouter:perplexity/sonar-pro", "z-ai/glm-5.3")
 
+    def test_per_model_overrides_follow_their_model_when_scoped(self):
+        configuration = load_configuration(configuration_path=Path("/nonexistent/crossfire.toml"))
+        mixed = replace(
+            configuration,
+            generators=ModelGroup(
+                names=("openrouter:perplexity/sonar-pro", "z-ai/glm-5.3"),
+                context_window=16000,
+                context_windows=(("openrouter:perplexity/sonar-pro", 128000),),
+                max_output_tokens_by_model=(("openrouter:perplexity/sonar-pro", 8000),),
+            ),
+            reviewers=ModelGroup(names=("rev-a",), context_window=16000),
+            synthesizer=ModelGroup(names=("synth-a",), context_window=32000),
+        )
+        on_opencode = replace(mixed, provider="opencode").resolve_for_mode("code")
+        assert on_opencode.generators.names == ("z-ai/glm-5.3",)
+        assert on_opencode.generators.context_windows == ()
+        assert on_opencode.generators.max_output_tokens_by_model == ()
+        assert on_opencode.validate(num_generators=1, num_reviewers_per_candidate=1) == []
+
+        on_openrouter = replace(mixed, provider="openrouter").resolve_for_mode("code")
+        assert on_openrouter.generators.context_windows == (("openrouter:perplexity/sonar-pro", 128000),)
+        assert on_openrouter.generators.max_output_tokens_by_model == (("openrouter:perplexity/sonar-pro", 8000),)
+
     def test_privacy_settings_default_to_safe_and_are_overridable(self, tmp_path: Path):
         defaults = load_configuration(configuration_path=Path("/nonexistent/crossfire.toml"))
         openrouter = next(provider for provider in defaults.providers if provider.name == "openrouter")
