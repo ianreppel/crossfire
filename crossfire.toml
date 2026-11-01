@@ -31,6 +31,8 @@
 #   Highest-frequency roles get the cheapest capable models, ordered cheapest
 #   first. A default run (1 generator, a few reviewers) is therefore affordable,
 #   and raising the counts adds pricier models rather than starting with them.
+#   Pools are spread across as many labs as each price tier allows, so no
+#   single vendor's blind spots dominate a run.
 #
 #   The frontier models are placed where they work: Opus 5.5 ($4/$20) synthesises,
 #   Fable ($10/$50) reviews, and Astra ($10/$50) is the synthesis fallback.
@@ -56,14 +58,21 @@ requires_session = true
 [providers.opencode.model_ids]
 "anthropic/claude-opus-5.5"         = "claude-opus-5-5"
 "anthropic/claude-fable-5.1"        = "claude-fable-5-1"
+"anthropic/claude-haiku-5.5"        = "claude-haiku-5-5"
 "openai/gpt-6-astra"                = "gpt-6-astra"
 "openai/gpt-6-sol"                  = "gpt-6-sol"
+"openai/gpt-6.1-sol"                = "gpt-6.1-sol"
 "openai/gpt-6-luna"                 = "gpt-6-luna"
 "openai/gpt-5.6-luna"               = "gpt-5.6-luna"
 "z-ai/glm-5.3"                      = "glm-5.3"
 "z-ai/glm-5.3-flash"                = "glm-5.3-flash"
 "deepseek/deepseek-v4.1-flash"      = "deepseek-v4.1-flash"
+"deepseek/deepseek-v4-pro"          = "deepseek-v4-pro"
 "moonshotai/kimi-k3"                = "kimi-k3"
+"moonshotai/kimi-k2.7-code"         = "kimi-k2.7-code"
+"minimax/minimax-m3"                = "minimax-m3"
+"qwen/qwen3.8-flash"                = "qwen3.8-flash"
+"x-ai/grok-4.7"                     = "grok-4.7"
 
 # ---------------------------------------------------------------------------
 # OpenCode Go ($10/mo). Open models only, so frontier slugs are substituted
@@ -77,21 +86,26 @@ api_key_env = "OPENCODE_API_KEY"
 requires_session = true
 
 [providers.opencode-go.model_ids]
-# Go serves many more models, but the bench stays pinned to gpt-6-luna, gpt-5.6-luna, glm-5.3,
-# glm-5.3-flash and kimi-k3 so runs stay comparable across gateways; every other slug is substituted
-# with the closest of those. deepseek-v4.1-flash is served by Go directly, and is still substituted
-# with glm-5.3-flash on purpose, to keep one model per bench slot across gateways.
+# Go serves every bench model directly except the Zen frontier set (opus, fable, astra and
+# the sol pair), which is substituted with the closest Go models.
 # Keep the synthesizer aliases on distinct models so fallback changes the backend.
 "anthropic/claude-opus-5.5"         = "gpt-5.6-luna"
 "anthropic/claude-fable-5.1"        = "glm-5.3"
+"anthropic/claude-haiku-5.5"        = "claude-haiku-5-5"
 "openai/gpt-6-astra"                = "kimi-k3"
 "openai/gpt-6-sol"                  = "gpt-5.6-luna"
-"openai/gpt-6-luna"                 = "glm-5.3-flash"
+"openai/gpt-6.1-sol"                = "gpt-6-luna"
+"openai/gpt-6-luna"                 = "gpt-6-luna"
 "openai/gpt-5.6-luna"               = "gpt-5.6-luna"
 "z-ai/glm-5.3"                      = "glm-5.3"
 "z-ai/glm-5.3-flash"                = "glm-5.3-flash"
 "deepseek/deepseek-v4.1-flash"      = "glm-5.3-flash"
+"deepseek/deepseek-v4-pro"          = "deepseek-v4-pro"
 "moonshotai/kimi-k3"                = "kimi-k3"
+"moonshotai/kimi-k2.7-code"         = "kimi-k2.7-code"
+"minimax/minimax-m3"                = "minimax-m3"
+"qwen/qwen3.8-flash"                = "qwen3.8-flash"
+"x-ai/grok-4.7"                     = "grok-4.7"
 
 # ---------------------------------------------------------------------------
 # OpenRouter (neutral slugs are already OpenRouter IDs, so no map is needed).
@@ -108,10 +122,15 @@ deny_data_collection = true
 
 # ---------------------------------------------------------------------------
 # Synthetic (https://synthetic.new). OpenAI-compatible, so it speaks chat.
-# Text roles ride the syn:* aliases, which track whatever model Synthetic
-# currently routes to, so the bench survives an upstream model swap. Concrete
-# open models are used only where the bench names them: GLM-5.3, Kimi-K3 and
-# DeepSeek-V4.1-Flash.
+# All text roles ride the syn:* aliases, which track whatever model Synthetic
+# currently routes to, so the bench survives upstream catalogue swaps.
+# syn:large:text (today: DeepSeek-V4.1-Flash-1017) does the work;
+# syn:small:text (today: GLM-4.7-Flash) stands in for the bench's cheap
+# flash-tier slots so costs stay in the same shape as the other gateways.
+# Synthetic is a flat subscription, not token-metered, and models.dev prices
+# only the hf:* IDs these aliases resolve to, not the aliases themselves.
+# Synthetic dry runs therefore list their models as unpriced and estimate $0;
+# that is expected, not a bench error.
 # ---------------------------------------------------------------------------
 
 [providers.synthetic]
@@ -120,14 +139,21 @@ api_key_env = "SYNTHETIC_API_KEY"
 [providers.synthetic.model_ids]
 "anthropic/claude-opus-5.5"         = "syn:large:text"
 "anthropic/claude-fable-5.1"        = "syn:large:text"
+"anthropic/claude-haiku-5.5"        = "syn:small:text"
 "openai/gpt-6-astra"                = "syn:large:text"
 "openai/gpt-6-sol"                  = "syn:large:text"
+"openai/gpt-6.1-sol"                = "syn:large:text"
 "openai/gpt-5.6-luna"               = "syn:large:text"
-"openai/gpt-6-luna"                 = "hf:deepseek-ai/DeepSeek-V4.1-Flash"
-"z-ai/glm-5.3"                      = "hf:zai-org/GLM-5.3-Flash"
-"z-ai/glm-5.3-flash"                = "hf:zai-org/GLM-5.3-Flash"
-"deepseek/deepseek-v4.1-flash"      = "hf:deepseek-ai/DeepSeek-V4.1-Flash"
-"moonshotai/kimi-k3"                = "hf:moonshotai/Kimi-K3"
+"openai/gpt-6-luna"                 = "syn:large:text"
+"z-ai/glm-5.3"                      = "syn:large:text"
+"z-ai/glm-5.3-flash"                = "syn:small:text"
+"deepseek/deepseek-v4.1-flash"      = "syn:small:text"
+"deepseek/deepseek-v4-pro"          = "syn:large:text"
+"moonshotai/kimi-k3"                = "syn:large:text"
+"moonshotai/kimi-k2.7-code"         = "syn:large:text"
+"minimax/minimax-m3"                = "syn:small:text"
+"qwen/qwen3.8-flash"                = "syn:small:text"
+"x-ai/grok-4.7"                     = "syn:large:text"
 
 # ---------------------------------------------------------------------------
 # Global defaults (fallback when a mode doesn't override a role)
@@ -135,14 +161,19 @@ api_key_env = "SYNTHETIC_API_KEY"
 
 [models.generators]
 # Generation is the longest-output, highest-frequency role, so the expensive
-# frontier models are kept out of it. Here: strongest cheap models first, so a
-# default 1-generator run is both good and affordable.
+# frontier models are kept out of it. Cheapest capable models first, spread
+# across labs for diversity, so a default 1-generator run is both good and
+# affordable.
 names = [
     "openai/gpt-6-luna",                 # frontier quality at $0.10/$0.50 per M
+    "anthropic/claude-haiku-5.5",        # Anthropic quality at luna prices
+    "qwen/qwen3.8-flash",                # cheapest on the bench
     "z-ai/glm-5.3-flash",                # fast and cheap
     "openai/gpt-5.6-luna",               # cheap reasoning
+    "minimax/minimax-m3",                # cheap, different lab
     "deepseek/deepseek-v4.1-flash",      # dirt cheap
     "z-ai/glm-5.3",                      # strongest open all-rounder
+    "x-ai/grok-4.7",                     # different lab, contrarian angle
     "moonshotai/kimi-k3",                # strong open, different lab
 ]
 context_window = 200000
@@ -151,22 +182,29 @@ max_output_tokens = 24000
 [models.reviewers]
 # Reviewers are where the adversarial value lives, and they are the most-called
 # role: cheap reasoning beats frontier prose. Ordered cheapest first, with the
-# models both Zen and Go serve at the head and the window sliding one place per
+# models every gateway serves at the head and the window sliding one place per
 # round, so a normal run never leaves that cheap, portable set. Only long runs
-# reach the gateway-specific and expensive tail.
+# reach the OpenRouter-only and expensive tail. The pool is spread across nine
+# labs so a critique cycle never collapses into one vendor's blind spots.
 #
-# Zen and Go:      gpt-6-luna, glm-5.3-flash, gpt-5.6-luna, glm-5.3, kimi-k3
-# Zen only:        deepseek-v4.1-flash, gpt-6-sol, gpt-6-astra, fable-5.1 (substituted on Go)
+# All gateways:    gpt-6-luna, claude-haiku-5.5, qwen3.8-flash, glm-5.3-flash, gpt-5.6-luna,
+#                  deepseek-v4.1-flash, minimax-m3, kimi-k2.7-code, glm-5.3, deepseek-v4-pro,
+#                  grok-4.7 (substituted on Go as needed; aliased on Synthetic)
+# Zen only:        gpt-6-sol, gpt-6-astra, fable-5.1 (substituted on Go, aliased on Synthetic)
 # OpenRouter only: perplexity/sonar-reasoning-pro
-# Synthetic maps every slug above onto its syn:* aliases or named open models.
 names = [
     "openai/gpt-6-luna",                 # frontier quality, cheap
+    "anthropic/claude-haiku-5.5",        # cheap, different lab
+    "qwen/qwen3.8-flash",                # cheapest on the bench
     "z-ai/glm-5.3-flash",                # fast, cheap
     "openai/gpt-5.6-luna",               # cheap reasoning
     "deepseek/deepseek-v4.1-flash",      # cheap, blunt
+    "minimax/minimax-m3",                # cheap, different lab
+    "moonshotai/kimi-k2.7-code",         # strong mid review, different lab
     "z-ai/glm-5.3",                      # strong open
-    "moonshotai/kimi-k3",                # strong open, different lab
+    "deepseek/deepseek-v4-pro",          # deep reasoning, different lab
     "openai/gpt-6-sol",                  # mid frontier reasoning (Zen)
+    "x-ai/grok-4.7",                     # contrarian critic, different lab
     "openrouter:perplexity/sonar-reasoning-pro",  # grounded reasoning (OpenRouter only)
     "openai/gpt-6-astra",                # expensive thorough critic (Zen)
     "anthropic/claude-fable-5.1",        # expensive thorough critic (Zen)
@@ -233,9 +271,11 @@ names = [
     "openrouter:perplexity/sonar-pro",           # native web-grounded research (OpenRouter only)
     "openrouter:perplexity/sonar-deep-research",  # multi-step research (OpenRouter only)
     "openai/gpt-6-luna",                 # grounded reasoning, cheap
+    "anthropic/claude-haiku-5.5",        # cheap, different lab
     "z-ai/glm-5.3-flash",                # fast analytical angle
     "deepseek/deepseek-v4.1-flash",      # cheap
     "z-ai/glm-5.3",                      # cheap analytical angle
+    "deepseek/deepseek-v4-pro",          # deep research reasoning
     "moonshotai/kimi-k3",                # long-context synthesis
 ]
 context_window = 200000
@@ -247,6 +287,7 @@ max_output_tokens = 16000
 [modes.code.generators]
 names = [
     "openai/gpt-6-sol",                  # SOTA agentic code, mid price
+    "moonshotai/kimi-k2.7-code",         # strong coder, cheap
     "openai/gpt-6-luna",                 # frontier quality, cheap
     "z-ai/glm-5.3",                      # strong open coder
     "deepseek/deepseek-v4.1-flash",      # cheap
@@ -256,7 +297,10 @@ context_window = 200000
 max_output_tokens = 16000
 
 [modes.code.synthesizer]
-names = ["openai/gpt-6-sol"]
+names = [
+    "openai/gpt-6-sol",                  # SOTA agentic code
+    "openai/gpt-6.1-sol",                # freshest sol; leads even rounds and the fallback
+]
 context_window = 200000
 max_output_tokens = 32000
 
@@ -273,9 +317,11 @@ max_output_tokens = 16000
 names = [
     "openrouter:perplexity/sonar-pro",   # web-grounded fact-checking (OpenRouter only)
     "openai/gpt-6-luna",                 # methodical, cheap
+    "anthropic/claude-haiku-5.5",        # methodical, cheap, different lab
     "z-ai/glm-5.3-flash",                # cheap
     "deepseek/deepseek-v4.1-flash",      # cheap
     "z-ai/glm-5.3",                      # cheap
+    "x-ai/grok-4.7",                     # sceptical, different lab
     "moonshotai/kimi-k3",                # structured
 ]
 context_window = 200000
@@ -287,8 +333,10 @@ max_output_tokens = 16000
 [modes.write.generators]
 names = [
     "openai/gpt-6-luna",                 # strong voice, cheap
+    "anthropic/claude-haiku-5.5",        # Anthropic voice, cheap
     "z-ai/glm-5.3-flash",                # cheap, different tone
     "deepseek/deepseek-v4.1-flash",      # cheap
+    "minimax/minimax-m3",                # different voice, different lab
     "z-ai/glm-5.3",                      # different register
     "moonshotai/kimi-k3",                # strong open
 ]
