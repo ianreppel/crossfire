@@ -168,8 +168,8 @@ How much of that it can enforce is the gateway's decision, and the four differ:
 | Gateway | Enforcement | Limit |
 |:--------|:-------------|:------|
 | `openrouter` | Every request carries `provider.data_collection: "deny"` and `provider.zdr: true` | The filters constrain provider routing. OpenRouter's own prompt storage stays empty unless you opt in to Input & Output Logging or to product-improvement use of your inputs, both off by default. |
-| `opencode` | The run is refused when a bench model is one Zen documents as training on prompts, which it lists as exceptions to its zero-retention pledge | Zen takes no per-request switch, and retains requests it forwards to the OpenAI and Anthropic APIs for 30 days. |
-| `opencode-go` | The same refusal, against Go's published per-model table | No per-request switch. Grok 4.6, Grok 4.7, GPT-6 Luna, and GPT-5.6 Luna retain prompts for 30 days; every other Go model is zero-retention. |
+| `opencode` | The run is refused when a bench model is one Zen documents as training on prompts, which it lists as exceptions to its zero-retention pledge | Zen takes no per-request switch, retains requests it forwards to the OpenAI and Anthropic APIs for 30 days and to the Mistral API per Mistral's own retention policy, and retains Beam Free prompts for 30 days. |
+| `opencode-go` | The same refusal, against Go's published per-model table | No per-request switch. Grok 4.7, GPT-6 Luna, GPT-5.6 Luna, Claude Haiku 5.5, and Beam Free retain prompts for 30 days; every other Go model is zero-retention. |
 | `synthetic` | Nothing to enforce | Synthetic states that it never trains on prompts and deletes API prompt data once the call completes. |
 
 The OpenCode gateways have no switch to waive, so Crossfire logs the retention that applies to the models in the bench when a run starts.
@@ -258,7 +258,8 @@ uv run crossfire run ... -v 2>&1 | jq 'select(.event == "synthesis_decision")'
 ```
 
 Every response's token usage, including caching, is captured.
-OpenRouter reports cost directly, whereas OpenCode Zen/Go and Synthetic costs are derived from `pricing.json`.
+OpenRouter reports cost directly, whereas OpenCode Zen/Go costs are derived from `pricing.json`.
+The same holds for Synthetic's `hf:` open models; its `syn:` frontier aliases have no public price, so those roles surface under `unpriced_models` instead of contributing to the total.
 A `cost_summary` event is emitted at the end of each run with per-model and aggregate totals.
 
 ## Development

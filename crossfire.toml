@@ -77,8 +77,10 @@ api_key_env = "OPENCODE_API_KEY"
 requires_session = true
 
 [providers.opencode-go.model_ids]
-# Go serves only gpt-6-luna, gpt-5.6-luna, glm-5.3, glm-5.3-flash and kimi-k3; everything else is
-# substituted with the closest of those.
+# Go serves many more models, but the bench stays pinned to gpt-6-luna, gpt-5.6-luna, glm-5.3,
+# glm-5.3-flash and kimi-k3 so runs stay comparable across gateways; every other slug is substituted
+# with the closest of those. deepseek-v4.1-flash is served by Go directly, and is still substituted
+# with glm-5.3-flash on purpose, to keep one model per bench slot across gateways.
 # Keep the synthesizer aliases on distinct models so fallback changes the backend.
 "anthropic/claude-opus-5.5"         = "gpt-5.6-luna"
 "anthropic/claude-fable-5.1"        = "glm-5.3"

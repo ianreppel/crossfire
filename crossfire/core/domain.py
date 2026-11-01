@@ -346,17 +346,12 @@ class CrossfireConfiguration:
         overrides = self.mode_overrides.get(mode)
         if not overrides:
             return self.for_active_provider()
-        resolved = CrossfireConfiguration(
-            api_key_env=self.api_key_env,
-            provider=self.provider,
-            providers=self.providers,
+        resolved = replace(
+            self,
             enricher=overrides.enricher or self.enricher,
             generators=overrides.generators or self.generators,
             reviewers=overrides.reviewers or self.reviewers,
             synthesizer=overrides.synthesizer or self.synthesizer,
-            search=self.search,
-            limits=self.limits,
-            mode_overrides=self.mode_overrides,
         )
         return resolved.for_active_provider()
 
@@ -391,6 +386,13 @@ class CrossfireConfiguration:
                 f"Unknown provider '{self.provider}'. Configured providers: {', '.join(provider_names) or 'none'}"
             )
 
+        for provider in self.providers:
+            if not provider.base_url.startswith(("http://", "https://")):
+                errors.append(
+                    f"Provider '{provider.name}' has no valid base_url. "
+                    f"Set base_url in [providers.{provider.name}] to an http:// or https:// URL."
+                )
+
         if not self.generators.names:
             errors.append("No generator models configured")
         if not self.synthesizer.names:
@@ -417,6 +419,14 @@ class CrossfireConfiguration:
                     f"{label}: {violation}"
                     for violation in privacy.training_violations(active_provider.name, wire_model_ids)
                 )
+
+            for model in group.names:
+                prefix, separator, _ = model.partition(":")
+                if separator and prefix and prefix not in provider_names:
+                    errors.append(
+                        f"{label}: '{model}' carries unknown provider prefix '{prefix}'. "
+                        f"Pin with one of: {', '.join(provider_names)}."
+                    )
 
             if group.context_window <= 0:
                 errors.append(f"{label}.context_window must be positive")
@@ -473,7 +483,11 @@ class RunParameters:
 
 @dataclass(frozen=True)
 class CostEstimate:
-    """Upper-bound cost estimate for a dry run, based on cached provider pricing."""
+    """Cost estimate for a dry run, based on cached provider pricing.
+
+    Models with no cached price contribute nothing to the total and are listed in ``missing_models``, so the
+    total is an estimate of the priced roles rather than an upper bound on the run.
+    """
 
     total_usd: float
     missing_models: tuple[str, ...] = ()

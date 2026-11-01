@@ -257,6 +257,7 @@ class Orchestrator:
             1,
             models=[model],
             candidate_indices=[None],
+            wire_model_ids=[self._wire_model_id(model)],
         )
         original_tokens = estimate_tokens(self.parameters.task.instruction)
         enriched = await self._call_llm(
@@ -305,6 +306,10 @@ class Orchestrator:
         return True
 
     # -- single round ---
+
+    def _wire_model_id(self, model: str) -> str:
+        """Returns the wire model ID the active gateway actually bills for *model*."""
+        return self.configuration.active_provider().resolve_wire_model_id(model)
 
     async def _run_round(self, round_num: int, previous_synthesis: str) -> RoundResult | None:
         """Executes one generate -> review -> synthesize cycle, returning None on failure."""
@@ -412,6 +417,7 @@ class Orchestrator:
             generator_count,
             models=generator_models,
             candidate_indices=[None] * generator_count,
+            wire_model_ids=[self._wire_model_id(model) for model in generator_models],
         )
 
         async def _generate(index: int, model: str) -> Candidate:
@@ -444,6 +450,7 @@ class Orchestrator:
                     role=Role.GENERATOR,
                     model=model,
                     round=round_num,
+                    wire_model_id=self._wire_model_id(model),
                     reason=f"generation_error:{type(result).__name__}",
                 )
             else:
@@ -476,6 +483,7 @@ class Orchestrator:
                 role=Role.GENERATOR,
                 model=model,
                 round=round_num,
+                wire_model_id=self._wire_model_id(model),
                 reason=reason,
             )
             replacement = await self._find_replacement_generator(
@@ -619,6 +627,7 @@ class Orchestrator:
             total_reviews,
             models=review_models,
             candidate_indices=review_cand_indices,
+            wire_model_ids=[self._wire_model_id(model) for model in review_models],
         )
 
         async def _review_task(
@@ -675,6 +684,7 @@ class Orchestrator:
                     role=Role.REVIEWER,
                     model=reviewer_model,
                     round=round_num,
+                    wire_model_id=self._wire_model_id(reviewer_model),
                     reason=f"review_error:{type(result).__name__}",
                 )
                 continue
@@ -819,6 +829,7 @@ class Orchestrator:
             1,
             models=[ordered[0]],
             candidate_indices=[None],
+            wire_model_ids=[self._wire_model_id(ordered[0])],
         )
         try:
             for model in ordered:
@@ -832,6 +843,7 @@ class Orchestrator:
                         role=Role.SYNTHESIZER,
                         model=model,
                         round=round_num,
+                        wire_model_id=self._wire_model_id(model),
                         reason=f"synth_error:{type(exception).__name__}",
                     )
             return None
@@ -868,7 +880,6 @@ class Orchestrator:
             role=Role.SYNTHESIZER,
             model=model,
             round_num=round_num,
-            fatal_on_overflow=False,
         )
 
         text = await self._call_llm(
@@ -917,12 +928,10 @@ class Orchestrator:
         role: Role,
         model: str,
         round_num: int,
-        fatal_on_overflow: bool = False,
     ) -> str:
         """Compresses *user_prompt* to fit the token budget.
 
-        Raises RunFailedError when *fatal_on_overflow* is True, otherwise RuntimeError. No current caller opts into
-        the fatal path: an overflow drops the model and the run degrades instead of aborting.
+        Raises RuntimeError on overflow, which drops the model and degrades the run instead of aborting it.
         """
         user_prompt, fits = compress_prompt_components(
             system_prompt=system_prompt,
@@ -942,12 +951,13 @@ class Orchestrator:
                 role=role,
                 model=model,
                 round=round_num,
+                wire_model_id=self._wire_model_id(model),
                 tokens_before=tokens,
                 tokens_after=tokens,
                 reason="token_overflow",
             )
             msg: str = f"Token overflow for {role} {model}"
-            raise RunFailedError(exclaim(msg)) if fatal_on_overflow else RuntimeError(exclaim(msg))
+            raise RuntimeError(exclaim(msg))
         return user_prompt
 
     async def _process_search_request(

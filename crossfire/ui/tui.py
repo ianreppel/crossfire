@@ -52,6 +52,7 @@ class _TaskRow:
     model: str
     phase: Phase
     candidate_index: int | None = None
+    wire_model: str = ""
     start_time: float = field(default_factory=time.monotonic)
     done: bool = False
     elapsed: float = 0.0
@@ -136,6 +137,7 @@ class TUI:
         total_tasks: int,
         models: list[str] | None = None,
         candidate_indices: list[int | None] | None = None,
+        wire_model_ids: list[str] | None = None,
     ) -> None:
         self._active_phase = phase
         self._active_phase_total = total_tasks
@@ -143,13 +145,15 @@ class TUI:
 
         if models:
             indices = candidate_indices or [None] * len(models)
+            wire_ids = wire_model_ids or [""] * len(models)
             rows = self._rounds.setdefault(round_num, [])
-            for model, candidate_index in zip(models, indices, strict=True):
+            for model, candidate_index, wire in zip(models, indices, wire_ids, strict=True):
                 rows.append(
                     _TaskRow(
                         model=model,
                         phase=phase,
                         candidate_index=candidate_index,
+                        wire_model=wire,
                     )
                 )
         self._refresh()
@@ -295,13 +299,20 @@ class TUI:
 
         return Group(*parts)
 
+    @staticmethod
+    def _wire_suffix(row: _TaskRow) -> str:
+        """Appends the billed model when the gateway substitutes the neutral slug for it."""
+        if row.wire_model and _shorten_model(row.wire_model) != _shorten_model(row.model):
+            return f" → {_shorten_model(row.wire_model)}"
+        return ""
+
     def _compute_max_model_display_width(self) -> int:
         widest: int = 10
         for rows in self._rounds.values():
             for row in rows:
                 name: str = _shorten_model(row.model)
                 suffix: str = f" → candidate {row.candidate_index}" if row.candidate_index is not None else ""
-                widest = max(widest, len(name) + len(suffix))
+                widest = max(widest, len(name) + len(self._wire_suffix(row)) + len(suffix))
         return widest
 
     def _build_collapsed_round(self, round_number: int, rows: list[_TaskRow]) -> Text:
@@ -364,7 +375,7 @@ class TUI:
         label_text, label_style = _PHASE_LABELS.get(row.phase, (row.phase, "white"))
         model_name: str = _shorten_model(row.model)
         suffix: str = f" → candidate {row.candidate_index}" if row.candidate_index is not None else ""
-        model_display: str = f"{model_name}{suffix}"
+        model_display: str = f"{model_name}{self._wire_suffix(row)}{suffix}"
 
         if row.done:
             icon: str = "[green]✓[/green]"

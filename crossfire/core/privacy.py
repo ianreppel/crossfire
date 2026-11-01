@@ -7,6 +7,10 @@ to run the models that train. Synthetic states that it never trains on and never
 no table.
 
 Sources: https://opencode.ai/docs/zen/ , https://opencode.ai/docs/go/ , https://openrouter.ai/docs/guides/routing/provider-selection
+
+The vendor catalogues rotate on a schedule of days, and these tables are hand-copied snapshots of them.
+``tests/test_drift.py`` diffs every table here against the live vendor pages whenever it has network, so a
+vendor policy change fails loudly instead of silently unprotecting runs.
 """
 
 from __future__ import annotations
@@ -14,21 +18,21 @@ from __future__ import annotations
 from collections.abc import Iterable
 
 # Wire model IDs the gateway documents as training on prompts. Zen lists these as exceptions to its
-# zero-retention pledge; Go lists the Muse Spark Contributor rows as "Yes" for model training.
+# zero-retention pledge; Go's privacy table lists them as "Yes" for model training.
 _TRAINING_MODELS: dict[str, frozenset[str]] = {
     "opencode": frozenset(
         {
             "big-pickle",
-            "ling-3.0-flash-fin-free",
-            "mimo-v2.5-free",
+            "flint-40b-free",
             "mimo-v2.6-flash-free",
-            "muse-spark-1.3-contributor-free",
-            "nemotron-3-5-lightning-free",
             "nemotron-3-ultra-free",
+            "nemotron-3.5-lightning-free",
+            "nemotron-3.5-super-vl-free",
         }
     ),
     "opencode-go": frozenset(
         {
+            "iceman-contributor-free",
             "muse-spark-1.2-contributor",
             "muse-spark-1.3-contributor",
         }
@@ -39,17 +43,19 @@ _TRAINING_MODELS: dict[str, frozenset[str]] = {
 # figure per model; every other Go model is zero-retention.
 _RETENTION_MODELS: dict[str, dict[str, str]] = {
     "opencode-go": {
+        "beam-free": "30 days",
+        "claude-haiku-5-5": "30 days",
         "gpt-5.6-luna": "30 days",
         "gpt-6-luna": "30 days",
-        "grok-4.6": "30 days",
         "grok-4.7": "30 days",
     },
 }
 
-# Gateway-wide retention caveats that the vendor states without attributing them to individual models.
+# Gateway-wide retention caveats that the vendor states without listing them in a per-model table.
 _GATEWAY_RETENTION_NOTES: dict[str, str] = {
-    "opencode": "opencode forwards OpenAI and Anthropic API requests under 30-day retention, "
-    "and documents no per-model attribution for it",
+    "opencode": "opencode forwards OpenAI and Anthropic API requests under 30-day retention and Mistral "
+    "requests under Mistral's own retention policy, retains Beam Free prompts for 30 days, and documents "
+    "no per-model attribution for it",
 }
 
 

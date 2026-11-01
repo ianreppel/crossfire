@@ -20,8 +20,9 @@ from crossfire.core.privacy import (
 from tests.helpers import LogCapture
 
 _ZEN_RETENTION_NOTE = (
-    "opencode forwards OpenAI and Anthropic API requests under 30-day retention, "
-    "and documents no per-model attribution for it"
+    "opencode forwards OpenAI and Anthropic API requests under 30-day retention and Mistral "
+    "requests under Mistral's own retention policy, retains Beam Free prompts for 30 days, and documents "
+    "no per-model attribution for it"
 )
 
 
@@ -52,10 +53,35 @@ def _with_provider_replacements(
 
 
 class TestTrainingModels:
-    def test_lists_the_documented_offenders_per_gateway(self):
-        assert "big-pickle" in training_models("opencode")
-        assert "muse-spark-1.3-contributor" in training_models("opencode-go")
+    def test_matches_the_documented_offenders_exactly(self):
+        assert training_models("opencode") == frozenset(
+            {
+                "big-pickle",
+                "flint-40b-free",
+                "mimo-v2.6-flash-free",
+                "nemotron-3-ultra-free",
+                "nemotron-3.5-lightning-free",
+                "nemotron-3.5-super-vl-free",
+            }
+        )
+        assert training_models("opencode-go") == frozenset(
+            {
+                "iceman-contributor-free",
+                "muse-spark-1.2-contributor",
+                "muse-spark-1.3-contributor",
+            }
+        )
         assert training_models("synthetic") == frozenset()
+
+    def test_refuses_every_live_training_model(self):
+        assert (
+            training_violations(
+                "opencode",
+                ["flint-40b-free", "nemotron-3.5-lightning-free", "nemotron-3.5-super-vl-free"],
+            )
+            != []
+        )
+        assert training_violations("opencode-go", ["iceman-contributor-free"]) != []
 
     def test_reports_only_the_offending_models(self):
         violations = training_violations("opencode-go", ["muse-spark-1.3-contributor", "kimi-k3"])
@@ -75,6 +101,14 @@ class TestRetentionNotices:
         notices = retention_notices("opencode-go", ["grok-4.7", "kimi-k3", "gpt-6-luna"])
         assert len(notices) == 2
         assert any("grok-4.7" in notice and "30 days" in notice for notice in notices)
+
+    def test_notices_every_model_the_go_table_marks_30_day(self):
+        notices = retention_notices(
+            "opencode-go",
+            ["beam-free", "claude-haiku-5-5", "gpt-5.6-luna", "gpt-6-luna", "grok-4.7"],
+        )
+        assert len(notices) == 5
+        assert not retention_notices("opencode-go", ["grok-4.6"])
 
     def test_silent_for_zero_retention_gateways(self):
         assert retention_notices("synthetic", ["syn:large:text"]) == []

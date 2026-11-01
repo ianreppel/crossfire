@@ -103,11 +103,14 @@ def log_model_dropped(
     role: Role,
     model: str,
     round: int,
+    wire_model_id: str = "",
     tokens_before: int | None = None,
     tokens_after: int | None = None,
     reason: str,
 ) -> None:
     fields: dict[str, Any] = dict(phase=phase, role=role, model=model, round=round, reason=reason)
+    if wire_model_id and wire_model_id != model:
+        fields["wire_model_id"] = wire_model_id
     if tokens_before is not None:
         fields["tokens_before"] = tokens_before
     if tokens_after is not None:

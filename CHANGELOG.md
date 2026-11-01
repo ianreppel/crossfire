@@ -7,6 +7,14 @@
 - A data-policy guard refuses a run whose bench names a model the gateway documents as training on prompts, and logs at run start when the chosen models retain prompts.
 - `deny_data_collection`, `require_zdr`, and `allow_training_models` per provider in `crossfire.toml`, all defaulting to the safe setting.
 
+### Fixed
+- Refreshed the policy tables from the vendor pages: Zen's training list matches its documented exceptions again (fixing a Nemotron wire ID that could never match), and Go's lists gain Iceman Contributor Free, Claude Haiku 5.5, and Beam Free while dropping the departed Grok 4.6.
+- Validation rejects a provider with no `base_url` and a model prefix that is not a configured provider, instead of failing mid-run.
+- OpenCode model families follow the vendor's documented wire protocols: minimax and qwen3.8-max route to chat, and the whole gpt-5.x family to responses.
+- `model_dropped` events and the progress display name the billed wire model ID when the gateway substitutes the neutral slug.
+- Removed the dead `fatal_on_overflow` parameter.
+- A network-gated test suite (`tests/test_drift.py`) diffs the policy tables and the protocol table against the live vendor pages, skipping when offline.
+
 ## [0.3.0] - 2026-09-24
 
 Crossfire supports OpenCode Zen, OpenCode Go, OpenRouter, and Synthetic. Zen is the default gateway.

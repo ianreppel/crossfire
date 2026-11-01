@@ -198,7 +198,7 @@ def parse_length_hint(instruction: str) -> int | None:
     Looks for patterns like "1,200 words" or "10 pages".  This is a heuristic:
     the number may refer to the input rather than the desired output (e.g.
     "analyse this 200 page document").  When in doubt the estimate errs on the
-    high side, which is acceptable for an upper-bound cost estimate.
+    high side.
 
     Returns the estimated token count, or ``None`` when no length signal is found.
     """

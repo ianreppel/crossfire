@@ -36,10 +36,13 @@ _ENDPOINTS: dict[str, str] = {
     "responses": "responses",
 }
 
-# Models that use the Anthropic messages protocol on the OpenCode gateways.
-_MESSAGES_PREFIXES: tuple[str, ...] = ("claude-", "qwen", "minimax-")
-# Models that use the OpenAI responses protocol on the OpenCode gateways.
-_RESPONSES_PREFIXES: tuple[str, ...] = ("gpt-6-", "gpt-5.6-", "grok-", "muse-")
+# Wire protocol per model family on the OpenCode gateways, anchored to the endpoint table the vendor
+# publishes at https://opencode.ai/docs/zen/ (diffed against it live by tests/test_drift.py). Every family
+# not listed speaks OpenAI chat completions.
+_MESSAGES_PREFIXES: tuple[str, ...] = ("claude-",)
+# Qwen splits across protocols: only these wire IDs sit on the messages endpoint.
+_MESSAGES_MODELS: frozenset[str] = frozenset({"qwen3.5-plus", "qwen3.6-plus", "qwen3.8-flash"})
+_RESPONSES_PREFIXES: tuple[str, ...] = ("gpt-5", "gpt-6", "grok-", "muse-")
 
 _TRANSIENT_STATUS_CODES = {429, 500, 502, 503, 504}
 # Two total attempts. Reasoning models on the OpenCode gateways can take minutes per call, so a larger retry
@@ -118,7 +121,7 @@ def resolve_protocol(provider: ProviderConfiguration, wire_model_id: str) -> Pro
     if provider.name == "openrouter":
         return "chat"
     lowered = wire_model_id.lower()
-    if lowered.startswith(_MESSAGES_PREFIXES):
+    if lowered in _MESSAGES_MODELS or lowered.startswith(_MESSAGES_PREFIXES):
         return "messages"
     if lowered.startswith(_RESPONSES_PREFIXES):
         return "responses"
