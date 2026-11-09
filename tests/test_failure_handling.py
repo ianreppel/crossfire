@@ -86,7 +86,6 @@ class TestReviewerAssignment:
             num_candidates=2,
             num_reviewers_per_candidate=2,
             round_num=1,
-            models_used_this_round=set(),
         )
         assert result is not None
         assert len(result) == 2
@@ -99,22 +98,8 @@ class TestReviewerAssignment:
             num_candidates=2,
             num_reviewers_per_candidate=2,
             round_num=1,
-            models_used_this_round=set(),
         )
         assert result is None
-
-    def test_filters_explicitly_excluded_models(self):
-        result = assign_reviewers(
-            reviewers=["r1", "r2", "r3", "r4"],
-            num_candidates=1,
-            num_reviewers_per_candidate=2,
-            round_num=1,
-            models_used_this_round={"r1", "r3"},
-        )
-        assert result is not None
-        assigned_models = [name for group in result.values() for name in group]
-        assert "r1" not in assigned_models
-        assert "r3" not in assigned_models
 
     @staticmethod
     def _window(round_num: int) -> dict[int, list[str]] | None:
@@ -123,7 +108,6 @@ class TestReviewerAssignment:
             num_candidates=1,
             num_reviewers_per_candidate=2,
             round_num=round_num,
-            models_used_this_round=set(),
         )
 
     def test_round_window_slides_through_the_cheapest_first_pool(self):
@@ -141,7 +125,6 @@ class TestReviewerAssignment:
                 num_candidates=1,
                 num_reviewers_per_candidate=0,
                 round_num=1,
-                models_used_this_round=set(),
             )
             == {}
         )

@@ -1,20 +1,24 @@
-"""Live drift tripwires for the hand-maintained vendor tables.
+"""Live drift tripwires for the bench's vendor tables.
 
-``privacy.py`` and ``providers.py`` transcribe the OpenCode vendor pages by hand, and those pages rotate on a
-schedule of days. These tests fetch both docs pages and both models endpoints and diff what they say against
-the shipped tables, so a vendor policy change fails loudly instead of silently unprotecting runs. When the
-pages cannot be reached (offline runs, CI sandboxes) every test here skips.
+``privacy.py`` and ``providers.py`` transcribe the OpenCode vendor pages by hand. The gating check here diffs
+only the wire IDs the configured bench actually runs (resolved from ``crossfire.toml``), so a vendor move to a
+model outside the bench stays quiet. A catalogue-wide diff still runs as a non-gating probe in
+``scripts/drift_probe.py`` (cron, not CI).
+
+When the vendor pages cannot be reached (offline runs, CI sandboxes) the live tests skip.
 """
 
 from __future__ import annotations
 
 import html
 import re
+from pathlib import Path
 
 import httpx
 import pytest
 
-from crossfire.core.domain import DEFAULT_PROVIDER_CONFIGURATIONS
+from crossfire.core.config import load_configuration
+from crossfire.core.domain import DEFAULT_PROVIDER_CONFIGURATIONS, _model_targets_provider
 from crossfire.core.privacy import _RETENTION_MODELS, _TRAINING_MODELS
 from crossfire.core.providers import Protocol, resolve_protocol
 
@@ -30,6 +34,33 @@ _ENDPOINT_TO_PROTOCOL: list[tuple[str, Protocol]] = [
     ("anthropic/v1/messages", "messages"),
     ("openai/v1/responses", "responses"),
 ]
+
+_TOML_PATH = Path(__file__).resolve().parents[1] / "crossfire.toml"
+
+
+def _bench_slugs() -> set[str]:
+    """Collects every neutral slug the configured bench can run, across groups and mode overrides."""
+    configuration = load_configuration(configuration_path=_TOML_PATH)
+    slugs: set[str] = set()
+    for group in (configuration.enricher, configuration.generators, configuration.reviewers, configuration.synthesizer):
+        slugs.update(group.names)
+    for overrides in configuration.mode_overrides.values():
+        for mode_group in (overrides.generators, overrides.reviewers, overrides.synthesizer, overrides.enricher):
+            if mode_group is not None:
+                slugs.update(mode_group.names)
+    return slugs
+
+
+def _bench_wire_ids(provider_name: str) -> set[str]:
+    """Resolves the bench slugs to *provider_name*'s wire IDs, keeping only models that target that gateway."""
+    configuration = load_configuration(configuration_path=_TOML_PATH)
+    provider = next(item for item in configuration.providers if item.name == provider_name)
+    provider_names = {item.name for item in configuration.providers}
+    return {
+        provider.resolve_wire_model_id(slug)
+        for slug in _bench_slugs()
+        if _model_targets_provider(slug, provider_name, provider_names)
+    }
 
 
 def _strip_tags(raw: str) -> list[str]:
@@ -143,49 +174,58 @@ def _zen_endpoint_protocols(vendor: _VendorPages) -> dict[str, Protocol]:
     return protocols
 
 
-def test_zen_training_table_matches_the_vendor_page(vendor: _VendorPages):
+def test_bench_wire_ids_resolve_for_every_gateway():
+    """Every bench slug resolves to a non-empty wire ID on every gateway, so a new model fails fast offline."""
+    configuration = load_configuration(configuration_path=_TOML_PATH)
+    provider_names = {item.name for item in configuration.providers}
+    for provider in configuration.providers:
+        for slug in _bench_slugs():
+            if not _model_targets_provider(slug, provider.name, provider_names):
+                continue
+            assert provider.resolve_wire_model_id(slug), f"{provider.name} has no wire ID for bench slug {slug!r}"
+
+
+def test_zen_bench_training_matches_the_vendor_page(vendor: _VendorPages):
+    bench = _bench_wire_ids("opencode")
     vendors = _zen_training_ids(vendor)
-    assert vendors == set(_TRAINING_MODELS["opencode"])
+    shipped = set(_TRAINING_MODELS["opencode"])
+    assert vendors & bench == shipped & bench
+    dead_bench_entries = (shipped & bench) - vendor.endpoint_ids["opencode"]
+    assert dead_bench_entries == set(), (
+        f"bench training entries name models off the live endpoint: {dead_bench_entries}"
+    )
 
 
-def test_go_training_and_retention_tables_match_the_vendor_page(vendor: _VendorPages):
+def test_go_bench_classification_matches_the_vendor_page(vendor: _VendorPages):
     rows = _go_policy_rows(vendor)
-    candidates = vendor.endpoint_ids["opencode-go"] | set(_TRAINING_MODELS["opencode-go"])
+    bench = _bench_wire_ids("opencode-go")
+    candidates = vendor.endpoint_ids["opencode-go"] | bench | set(_TRAINING_MODELS["opencode-go"])
+    mapped = {name for name in rows if _wire_id_for(name, candidates) is not None}
     classified = {
         name for name, (trains, retention) in rows.items() if trains == "Yes" or retention.strip("*").startswith("30")
     }
-    training = {name for name in classified if rows[name][0] == "Yes"}
-    retaining = classified - training
-    unmapped = {name for name in classified if _wire_id_for(name, candidates) is None}
-    assert unmapped == set(), f"vendor classifies models with no known wire ID: {unmapped}"
-    assert {_wire_id_for(name, candidates) for name in training} == set(_TRAINING_MODELS["opencode-go"])
-    assert {_wire_id_for(name, candidates) for name in retaining} == set(_RETENTION_MODELS["opencode-go"])
+    training = {_wire_id_for(name, candidates) for name in classified if rows[name][0] == "Yes"}
+    retaining = {_wire_id_for(name, candidates) for name in classified if rows[name][0] != "Yes"}
+    training.discard(None)
+    retaining.discard(None)
+
+    unmapped = {name for name in classified - mapped if _wire_id_for(name, candidates) is None}
+    assert unmapped == set(), f"vendor classifies bench models with no known wire ID: {unmapped}"
+    assert training & bench == set(_TRAINING_MODELS["opencode-go"]) & bench
+    assert retaining & bench == set(_RETENTION_MODELS["opencode-go"]) & bench
+
+    all_mapped = {_wire_id_for(name, candidates) for name in rows if _wire_id_for(name, candidates) is not None}
+    silent_bench = bench - all_mapped
+    assert silent_bench == set(), f"Go table is silent on bench wire IDs (classify or remove): {silent_bench}"
 
 
-def test_no_dead_entries_in_the_policy_tables(vendor: _VendorPages):
-    candidates_go = (
-        vendor.endpoint_ids["opencode-go"]
-        | set(_TRAINING_MODELS["opencode-go"])
-        | set(_RETENTION_MODELS["opencode-go"])
-    )
-    live_and_documented = (
-        set(_zen_training_ids(vendor))
-        | vendor.endpoint_ids["opencode"]
-        | vendor.endpoint_ids["opencode-go"]
-        | {wire for name in _go_policy_rows(vendor) if (wire := _wire_id_for(name, candidates_go)) is not None}
-    )
-    stale = (
-        set(_TRAINING_MODELS["opencode"]) | set(_TRAINING_MODELS["opencode-go"]) | set(_RETENTION_MODELS["opencode-go"])
-    ) - live_and_documented
-    assert stale == set(), f"policy tables name models on no live endpoint or vendor page: {stale}"
-
-
-def test_protocol_table_matches_the_vendor_endpoints(vendor: _VendorPages):
+def test_bench_protocol_matches_the_vendor_endpoints(vendor: _VendorPages):
     protocols = _zen_endpoint_protocols(vendor)
+    bench = _bench_wire_ids("opencode")
     opencode = next(provider for provider in DEFAULT_PROVIDER_CONFIGURATIONS if provider.name == "opencode")
     mismatches = {
         wire_id: (protocol, resolve_protocol(opencode, wire_id))
         for wire_id, protocol in protocols.items()
-        if resolve_protocol(opencode, wire_id) != protocol
+        if wire_id in bench and resolve_protocol(opencode, wire_id) != protocol
     }
-    assert mismatches == {}, f"resolve_protocol disagrees with the vendor endpoint table: {mismatches}"
+    assert mismatches == {}, f"resolve_protocol disagrees with the vendor endpoint table for bench models: {mismatches}"

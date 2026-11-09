@@ -13,7 +13,8 @@
 - OpenCode model families follow the vendor's documented wire protocols: minimax and qwen3.8-max route to chat, and the whole gpt-5.x family to responses.
 - `model_dropped` events and the progress display name the billed wire model ID when the gateway substitutes the neutral slug.
 - Removed the dead `fatal_on_overflow` parameter.
-- A network-gated test suite (`tests/test_drift.py`) diffs the policy tables and the protocol table against the live vendor pages, skipping when offline.
+- A network-gated test suite (`tests/test_drift.py`) diffs the bench's policy tables and the protocol routing against the live vendor pages, skipping when offline. A non-gating catalogue probe (`scripts/drift_probe.py`) reports provider-side drift outside the bench.
+- Removed the dead `models_used_this_round` parameter. Round rotation already covers freshness.
 
 ## [0.3.0] - 2026-09-24
 

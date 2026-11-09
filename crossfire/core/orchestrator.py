@@ -608,7 +608,6 @@ class Orchestrator:
             num_candidates=len(candidates),
             num_reviewers_per_candidate=self.parameters.num_reviewers_per_candidate,
             round_num=round_num,
-            models_used_this_round=set(),
         )
 
         if assignments is None:

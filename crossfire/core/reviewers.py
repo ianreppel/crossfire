@@ -9,7 +9,6 @@ def assign_reviewers(
     num_candidates: int,
     num_reviewers_per_candidate: int,
     round_num: int,
-    models_used_this_round: set[str],
 ) -> dict[int, list[str]] | None:
     """Assigns reviewer models to candidates with each reviewer appearing at most once per round.
 
@@ -17,7 +16,7 @@ def assign_reviewers(
     place per round, so early rounds stay inside that cheap, portable head and only long runs reach the pricier or
     gateway-specific tail. A single round never repeats a reviewer; models may recur across rounds.
     """
-    available = [name for name in reviewers if name not in models_used_this_round]
+    available = list(reviewers)
     required = num_candidates * num_reviewers_per_candidate
     if required == 0:
         return {}
