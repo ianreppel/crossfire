@@ -279,7 +279,8 @@ uv run mypy crossfire/         # type check
 
 Use `--dry-run` to verify your changes without making API calls.
 It produces deterministic synthetic outputs via SHA-256 hashing.
-If `pricing.json` is present (from `crossfire prices`), the summary table includes an upper-bound cost estimate.
+If `pricing.json` is present (from `crossfire prices`), the summary table shows a cost estimate for the priced models.
+Models with no cached price are listed as unpriced and excluded from the total.
 
 ```bash
 uv run crossfire run \
