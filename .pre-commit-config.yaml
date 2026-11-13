@@ -6,10 +6,10 @@ repos:
         additional_dependencies: [tomli]
         args: [--wrap-summaries=120, --wrap-descriptions=120, --in-place]
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.4.8
+    rev: v0.15.10
     hooks:
       - id: ruff-format
-      - id: ruff
+      - id: ruff-check
         args: [--fix]
   - repo: https://github.com/pre-commit/mirrors-mypy
     rev: v1.15.0

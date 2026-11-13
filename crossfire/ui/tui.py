@@ -19,7 +19,7 @@ from rich.progress import BarColumn, Progress, TextColumn, TimeElapsedColumn
 from rich.table import Table
 from rich.text import Text
 
-from crossfire.core.domain import CostEstimate, Phase, RunParameters
+from crossfire.core.domain import CostEstimate, Phase, RunParameters, strip_provider_pin
 
 _PHASE_LABELS: dict[Phase, tuple[str, str]] = {
     Phase.ENRICHMENT: ("Enriching", "blue"),
@@ -34,8 +34,8 @@ _SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
 
 def _shorten_model(model: str) -> str:
-    """Strips the ``openrouter:vendor/`` prefix, keeping only the model slug."""
-    return model.split("/")[-1]
+    """Returns the model slug after removing a provider pin and namespace."""
+    return strip_provider_pin(model).split("/")[-1]
 
 
 def _format_elapsed(seconds: float) -> str:
@@ -52,6 +52,7 @@ class _TaskRow:
     model: str
     phase: Phase
     candidate_index: int | None = None
+    wire_model: str = ""
     start_time: float = field(default_factory=time.monotonic)
     done: bool = False
     elapsed: float = 0.0
@@ -102,7 +103,7 @@ class TUI:
 
         self.console.print(
             Panel(
-                f"[bold]Crossfire[/bold] — {parameters.mode.value} mode\n"
+                f"[bold]Crossfire[/bold]: {parameters.mode.value} mode\n"
                 f"Rounds: {parameters.num_rounds} | "
                 f"Generators: {parameters.num_generators} | "
                 f"Reviewers/candidate: {parameters.num_reviewers_per_candidate}"
@@ -136,6 +137,7 @@ class TUI:
         total_tasks: int,
         models: list[str] | None = None,
         candidate_indices: list[int | None] | None = None,
+        wire_model_ids: list[str] | None = None,
     ) -> None:
         self._active_phase = phase
         self._active_phase_total = total_tasks
@@ -143,13 +145,15 @@ class TUI:
 
         if models:
             indices = candidate_indices or [None] * len(models)
+            wire_ids = wire_model_ids or [""] * len(models)
             rows = self._rounds.setdefault(round_num, [])
-            for model, candidate_index in zip(models, indices, strict=True):
+            for model, candidate_index, wire in zip(models, indices, wire_ids, strict=True):
                 rows.append(
                     _TaskRow(
                         model=model,
                         phase=phase,
                         candidate_index=candidate_index,
+                        wire_model=wire,
                     )
                 )
         self._refresh()
@@ -221,6 +225,8 @@ class TUI:
 
         if cost_estimate is not None:
             table.add_row("Estimated cost", f"${cost_estimate.total_usd:.2f}")
+            if cost_estimate.missing_models:
+                table.add_row("Unpriced models", ", ".join(cost_estimate.missing_models))
             if cost_estimate.fetched_at:
                 table.add_row("Prices from", cost_estimate.fetched_at[:10])
         else:
@@ -229,7 +235,12 @@ class TUI:
             table.add_row("Round failures", str(failures))
             table.add_row("Total input tokens", str(cost_summary.get("total_input_tokens", 0)))
             table.add_row("Total output tokens", str(cost_summary.get("total_output_tokens", 0)))
+            table.add_row("Cache read tokens", str(cost_summary.get("total_cache_read_tokens", 0)))
+            table.add_row("Cache write tokens", str(cost_summary.get("total_cache_write_tokens", 0)))
             table.add_row("Total cost", f"${cost_summary.get('total_cost', 0):.4f}")
+            unpriced_models = cost_summary.get("unpriced_models", [])
+            if unpriced_models:
+                table.add_row("Unpriced models", ", ".join(unpriced_models))
 
         self.console.print(table)
 
@@ -288,13 +299,20 @@ class TUI:
 
         return Group(*parts)
 
+    @staticmethod
+    def _wire_suffix(row: _TaskRow) -> str:
+        """Appends the billed model when the gateway substitutes the neutral slug for it."""
+        if row.wire_model and _shorten_model(row.wire_model) != _shorten_model(row.model):
+            return f" → {_shorten_model(row.wire_model)}"
+        return ""
+
     def _compute_max_model_display_width(self) -> int:
         widest: int = 10
         for rows in self._rounds.values():
             for row in rows:
                 name: str = _shorten_model(row.model)
                 suffix: str = f" → candidate {row.candidate_index}" if row.candidate_index is not None else ""
-                widest = max(widest, len(name) + len(suffix))
+                widest = max(widest, len(name) + len(self._wire_suffix(row)) + len(suffix))
         return widest
 
     def _build_collapsed_round(self, round_number: int, rows: list[_TaskRow]) -> Text:
@@ -308,8 +326,7 @@ class TUI:
             return Text.from_markup(f"  Enrichment  [green]✓[/green]  {model_name}  [dim]{elapsed}[/dim]")
 
         return Text.from_markup(
-            f"  Round {round_number}/{self._total_rounds}  [green]✓[/green]"
-            f"  {task_count} tasks  [dim]{elapsed}[/dim]"
+            f"  Round {round_number}/{self._total_rounds}  [green]✓[/green]  {task_count} tasks  [dim]{elapsed}[/dim]"
         )
 
     def _build_collapsed_phase(self, phase: Phase, phase_rows: list[_TaskRow]) -> Text:
@@ -358,7 +375,7 @@ class TUI:
         label_text, label_style = _PHASE_LABELS.get(row.phase, (row.phase, "white"))
         model_name: str = _shorten_model(row.model)
         suffix: str = f" → candidate {row.candidate_index}" if row.candidate_index is not None else ""
-        model_display: str = f"{model_name}{suffix}"
+        model_display: str = f"{model_name}{self._wire_suffix(row)}{suffix}"
 
         if row.done:
             icon: str = "[green]✓[/green]"

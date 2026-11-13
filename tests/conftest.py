@@ -44,7 +44,7 @@ def basic_configuration() -> CrossfireConfiguration:
         ),
         synthesizer=ModelGroup(names=("synth-a",), context_window=32000),
         search=SearchConfiguration(enabled=False),
-        limits=LimitsConfiguration(max_concurrent_requests=10, temperature_default=0.2),
+        limits=LimitsConfiguration(max_concurrent_requests=10, temperature_generators=0.2),
     )
 
 

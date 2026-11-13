@@ -5,9 +5,11 @@ from __future__ import annotations
 
 import enum
 from collections import defaultdict
-from dataclasses import dataclass, field
+from collections.abc import Collection
+from dataclasses import dataclass, field, replace
 from typing import Any
 
+from crossfire.core import privacy
 from crossfire.core.tokens import compute_token_budget
 
 
@@ -30,13 +32,99 @@ class Phase(enum.StrEnum):
 
 
 class Mode(enum.StrEnum):
-    """Operating mode — determines prompt templates and review protocols."""
+    """Operating mode: determines prompt templates and review protocols."""
 
     RESEARCH = "research"
     CODE = "code"
     EDIT = "edit"
     CHECK = "check"
     WRITE = "write"
+
+
+_KNOWN_PROVIDER_PREFIXES: tuple[str, ...] = ("opencode-go", "opencode", "openrouter", "synthetic")
+
+
+def split_provider_pin(model: str, provider_names: Collection[str]) -> tuple[str | None, str]:
+    """Returns a tuple of the matching provider name and remaining model ID, or ``(None, model)`` if no pin matches."""
+    provider_name, separator, model_id = model.partition(":")
+    if separator and provider_name in provider_names:
+        return provider_name, model_id
+    return None, model
+
+
+def strip_provider_pin(model: str, provider_names: Collection[str] = _KNOWN_PROVIDER_PREFIXES) -> str:
+    """Returns the model ID without a configured provider pin, or unchanged if no pin matches.
+
+    Use this when the caller does not need the pinned provider name.
+    """
+    _, model_id = split_provider_pin(model, provider_names)
+    return model_id
+
+
+def _model_targets_provider(model: str, provider_name: str, provider_names: set[str]) -> bool:
+    """Returns True when *model* is unpinned or pinned to *provider_name*."""
+    pin, _ = split_provider_pin(model, provider_names)
+    return pin is None or pin == provider_name
+
+
+@dataclass(frozen=True)
+class ProviderConfiguration:
+    """Connection details, model alias table, and data policy for a single inference gateway.
+
+    ``model_ids`` maps a neutral model slug (one that works on every gateway) to the gateway's wire model ID.
+    Slugs absent from the table are passed through unchanged, which is what makes OpenRouter lists work as-is.
+
+    The three policy fields default to the safe setting. ``deny_data_collection`` and ``require_zdr`` become
+    OpenRouter's per-request routing filters, which are the only such controls any gateway exposes. On OpenCode,
+    these fields record intent but do not change the request. :mod:`crossfire.core.privacy` refuses models whose input
+    data may be used for training or model improvement by default. ``allow_training_models`` overrides that refusal.
+    """
+
+    name: str
+    base_url: str
+    api_key_env: str
+    requires_session: bool = False
+    model_ids: tuple[tuple[str, str], ...] = ()
+    deny_data_collection: bool = True
+    require_zdr: bool = True
+    allow_training_models: bool = False
+
+    def resolve_wire_model_id(self, model: str) -> str:
+        """Returns this gateway's wire ID for a configured model ID.
+
+        This gateway's provider pin is removed before alias lookup, so a pinned model ID and its unpinned form resolve
+        to the same wire ID. Pricing uses the same resolver.
+        """
+        _, model_id = split_provider_pin(model, (self.name,))
+        for neutral, wire in self.model_ids:
+            if neutral == model_id:
+                return wire
+        return model_id
+
+
+DEFAULT_PROVIDER_CONFIGURATIONS: tuple[ProviderConfiguration, ...] = (
+    ProviderConfiguration(
+        name="opencode",
+        base_url="https://opencode.ai/zen/v1",
+        api_key_env="OPENCODE_API_KEY",
+    ),
+    ProviderConfiguration(
+        name="opencode-go",
+        base_url="https://opencode.ai/zen/go/v1",
+        api_key_env="OPENCODE_API_KEY",
+        requires_session=True,
+    ),
+    ProviderConfiguration(
+        name="openrouter",
+        base_url="https://openrouter.ai/api/v1",
+        api_key_env="OPENROUTER_API_KEY",
+    ),
+    ProviderConfiguration(
+        name="synthetic",
+        base_url="https://api.synthetic.new/openai/v1",
+        api_key_env="SYNTHETIC_API_KEY",
+    ),
+)
 
 
 @dataclass(frozen=True)
@@ -155,12 +243,32 @@ class SearchConfiguration:
 
 @dataclass(frozen=True)
 class LimitsConfiguration:
-    """Concurrency, temperature, and timeout defaults."""
+    """Concurrency, temperature, reasoning effort, and timeout defaults."""
 
     max_concurrent_requests: int = 10
-    temperature_default: float = 0.2
+    temperature_generators: float = 0.7
+    temperature_reviewers: float = 0.1
+    temperature_synthesizer: float = 0.2
+    temperature_enricher: float = 0.3
     http_timeout: float = 120.0
     search_timeout: float = 30.0
+    reasoning_effort_by_role: tuple[tuple[str, str], ...] = ()
+
+    def temperature_for(self, role: Role) -> float:
+        """Returns the configured sampling temperature for *role* (frontier models ignore it entirely)."""
+        return {
+            Role.ENRICHER: self.temperature_enricher,
+            Role.GENERATOR: self.temperature_generators,
+            Role.REVIEWER: self.temperature_reviewers,
+            Role.SYNTHESIZER: self.temperature_synthesizer,
+        }[role]
+
+    def reasoning_effort_for(self, role: Role) -> str:
+        """Returns the configured reasoning effort for *role*, or ``""`` when unset."""
+        for role_name, effort in self.reasoning_effort_by_role:
+            if role_name == role.value:
+                return effort
+        return ""
 
 
 @dataclass
@@ -178,6 +286,8 @@ class CrossfireConfiguration:
     """Top-level configuration: model groups, search, limits, and per-mode overrides"""
 
     api_key_env: str = "OPENROUTER_API_KEY"
+    provider: str = "opencode"
+    providers: tuple[ProviderConfiguration, ...] = DEFAULT_PROVIDER_CONFIGURATIONS
     enricher: ModelGroup = field(
         default_factory=lambda: ModelGroup(
             names=(),
@@ -198,21 +308,74 @@ class CrossfireConfiguration:
     limits: LimitsConfiguration = field(default_factory=LimitsConfiguration)
     mode_overrides: dict[str, ModelGroupOverrides] = field(default_factory=dict)
 
+    def active_provider(self) -> ProviderConfiguration:
+        """Returns the provider selected by :attr:`provider`, falling back to the first configured one."""
+        for provider in self.providers:
+            if provider.name == self.provider:
+                return provider
+        if self.providers:
+            return self.providers[0]
+        return ProviderConfiguration(name=self.provider, base_url="", api_key_env=self.api_key_env)
+
+    def for_active_provider(self) -> CrossfireConfiguration:
+        """Restricts every group to the models the active provider can serve.
+
+        A model may be pinned to one gateway with a ``provider:`` prefix (e.g. ``openrouter:perplexity/sonar-pro``),
+        in which case it drops out of every other gateway's groups. Unprefixed models serve on all gateways. This
+        is what keeps OpenRouter-only models (Perplexity) out of OpenCode runs, and vice versa.
+        """
+        provider_names = {provider.name for provider in self.providers}
+
+        def keep(group: ModelGroup) -> ModelGroup:
+            names = tuple(name for name in group.names if _model_targets_provider(name, self.provider, provider_names))
+            if names == group.names:
+                return group
+            context_windows = tuple(entry for entry in group.context_windows if entry[0] in names)
+            max_output_tokens_by_model = tuple(entry for entry in group.max_output_tokens_by_model if entry[0] in names)
+            return replace(
+                group,
+                names=names,
+                context_windows=context_windows,
+                max_output_tokens_by_model=max_output_tokens_by_model,
+            )
+
+        return replace(
+            self,
+            enricher=keep(self.enricher),
+            generators=keep(self.generators),
+            reviewers=keep(self.reviewers),
+            synthesizer=keep(self.synthesizer),
+        )
+
     def resolve_for_mode(self, mode: str) -> CrossfireConfiguration:
-        """Resolves a configuration with overrides for a certain *mode*."""
+        """Resolves a configuration with overrides for a certain *mode*, scoped to the active provider."""
         overrides = self.mode_overrides.get(mode)
         if not overrides:
-            return self
-        return CrossfireConfiguration(
-            api_key_env=self.api_key_env,
+            return self.for_active_provider()
+        resolved = replace(
+            self,
             enricher=overrides.enricher or self.enricher,
             generators=overrides.generators or self.generators,
             reviewers=overrides.reviewers or self.reviewers,
             synthesizer=overrides.synthesizer or self.synthesizer,
-            search=self.search,
-            limits=self.limits,
-            mode_overrides=self.mode_overrides,
         )
+        return resolved.for_active_provider()
+
+    def data_policy_notices(self) -> list[str]:
+        """Returns data-use and retention notices for the active gateway and models in this run.
+
+        These notices do not block a run when a model retains prompts. By default, :meth:`validate` refuses models
+        whose input data the gateway may use for training or model improvement.
+        """
+        provider = self.active_provider()
+        notices: list[str] = []
+        for group in (self.enricher, self.generators, self.reviewers, self.synthesizer):
+            wire_model_ids = [provider.resolve_wire_model_id(model) for model in group.names]
+            notices.extend(privacy.retention_notices(provider.name, wire_model_ids))
+        gateway_data_policy_note = privacy.gateway_data_policy_note(provider.name)
+        if gateway_data_policy_note:
+            notices.append(gateway_data_policy_note)
+        return sorted(set(notices))
 
     def validate(
         self,
@@ -221,6 +384,20 @@ class CrossfireConfiguration:
     ) -> list[str]:
         """Returns a list of validation errors (empty = valid)."""
         errors: list[str] = []
+        active_provider = self.active_provider()
+
+        provider_names = sorted(provider.name for provider in self.providers)
+        if self.provider not in provider_names:
+            errors.append(
+                f"Unknown provider '{self.provider}'. Configured providers: {', '.join(provider_names) or 'none'}"
+            )
+
+        for provider in self.providers:
+            if not provider.base_url.startswith(("http://", "https://")):
+                errors.append(
+                    f"Provider '{provider.name}' has no valid base_url. "
+                    f"Set base_url in [providers.{provider.name}] to an http:// or https:// URL."
+                )
 
         if not self.generators.names:
             errors.append("No generator models configured")
@@ -236,12 +413,22 @@ class CrossfireConfiguration:
                 "Add more models to [models.reviewers] in crossfire.toml"
             )
 
+        # A configured provider name before the first colon restricts the model to that gateway.
+        # Other prefixes stay in the ID.
+        # An unconfigured prefix passes validation and may reach the gateway as an unknown model.
         for label, group in [
             ("enricher", self.enricher),
             ("generators", self.generators),
             ("reviewers", self.reviewers),
             ("synthesizer", self.synthesizer),
         ]:
+            if not active_provider.allow_training_models:
+                wire_model_ids = [active_provider.resolve_wire_model_id(model) for model in group.names]
+                errors.extend(
+                    f"{label}: {violation}"
+                    for violation in privacy.training_violations(active_provider.name, wire_model_ids)
+                )
+
             if group.context_window <= 0:
                 errors.append(f"{label}.context_window must be positive")
 
@@ -297,7 +484,11 @@ class RunParameters:
 
 @dataclass(frozen=True)
 class CostEstimate:
-    """Upper-bound cost estimate for a dry run, based on cached OpenRouter pricing."""
+    """Cost estimate for a dry run, based on cached provider pricing.
+
+    Models with no cached price contribute nothing to the total and are listed in ``missing_models``, so the
+    total is an estimate of the priced roles rather than an upper bound on the run.
+    """
 
     total_usd: float
     missing_models: tuple[str, ...] = ()
@@ -306,14 +497,18 @@ class CostEstimate:
 
 @dataclass
 class CostEntry:
-    """Token and cost information from a single LLM call in OpenRouter."""
+    """Token and cost information from a single LLM call."""
 
     model: str
     role: Role
     round: int
     input_tokens: int = 0
     output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
     cost: float | None = None
+    provider: str = ""
+    wire_model_id: str = ""
 
 
 @dataclass
@@ -327,20 +522,35 @@ class CostTracker:
 
     def summarize(self) -> dict[str, Any]:
         per_model: dict[str, dict[str, float]] = defaultdict(
-            lambda: {"input_tokens": 0, "output_tokens": 0, "cost": 0.0}
+            lambda: {
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "cache_read_tokens": 0,
+                "cache_write_tokens": 0,
+                "cost": 0.0,
+            }
         )
         total_input = 0
         total_output = 0
+        total_cache_read = 0
+        total_cache_write = 0
         total_cost = 0.0
+        unpriced_models: set[str] = set()
 
         for entry in self.entries:
             total_input += entry.input_tokens
             total_output += entry.output_tokens
+            total_cache_read += entry.cache_read_tokens
+            total_cache_write += entry.cache_write_tokens
             if entry.cost is not None:
                 total_cost += entry.cost
+            else:
+                unpriced_models.add(f"{entry.provider}::{entry.wire_model_id or entry.model}")
 
             per_model[entry.model]["input_tokens"] += entry.input_tokens
             per_model[entry.model]["output_tokens"] += entry.output_tokens
+            per_model[entry.model]["cache_read_tokens"] += entry.cache_read_tokens
+            per_model[entry.model]["cache_write_tokens"] += entry.cache_write_tokens
             if entry.cost is not None:
                 per_model[entry.model]["cost"] += entry.cost
 
@@ -348,5 +558,8 @@ class CostTracker:
             "per_model": dict(per_model),
             "total_input_tokens": total_input,
             "total_output_tokens": total_output,
+            "total_cache_read_tokens": total_cache_read,
+            "total_cache_write_tokens": total_cache_write,
             "total_cost": total_cost,
+            "unpriced_models": sorted(unpriced_models),
         }

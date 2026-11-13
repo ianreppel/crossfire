@@ -58,9 +58,9 @@ async def test_rounds_are_sequential(basic_configuration, three_round_parameters
     for event, round_num, phase in phase_events:
         assert isinstance(round_num, int)
         if event == "phase_start" and phase == "generation":
-            assert (
-                round_num >= last_end_round
-            ), f"Learn to count! Round {round_num} started before round {last_end_round} ended."
+            assert round_num >= last_end_round, (
+                f"Learn to count! Round {round_num} started before round {last_end_round} ended."
+            )
         if event == "phase_end" and phase == "synthesis":
             last_end_round = round_num
 

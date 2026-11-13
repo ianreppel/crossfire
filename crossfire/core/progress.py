@@ -17,6 +17,7 @@ class ProgressCallback(Protocol):
         total_tasks: int,
         models: list[str] | None = None,
         candidate_indices: list[int | None] | None = None,
+        wire_model_ids: list[str] | None = None,
     ) -> None: ...
     def on_task_done(
         self,
@@ -40,6 +41,7 @@ class NoOpProgress:
         total_tasks: int,
         models: list[str] | None = None,
         candidate_indices: list[int | None] | None = None,
+        wire_model_ids: list[str] | None = None,
     ) -> None:
         pass
 

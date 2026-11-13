@@ -246,8 +246,8 @@ class TestBannedPhrases:
             if phrase in cursed.lower()
         ]
 
-        assert (
-            len(hits) >= 15
-        ), f"You sound like a CEO! The cursed sentence should trigger most bans, got {len(hits)} hits"
+        assert len(hits) >= 15, (
+            f"You sound like a CEO! The cursed sentence should trigger most bans, got {len(hits)} hits"
+        )
         for phrase in hits:
             assert phrase in _BANNED_PHRASES.lower(), f"'{phrase}' missing from banned list"

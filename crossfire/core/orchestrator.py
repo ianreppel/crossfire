@@ -6,7 +6,9 @@ import asyncio
 import json
 import re
 from dataclasses import replace
+from pathlib import Path
 from typing import Any, cast
+from uuid import uuid4
 
 import httpx
 
@@ -16,6 +18,7 @@ from crossfire.core.compression import compress_prompt_components
 from crossfire.core.config import get_api_key
 from crossfire.core.domain import (
     Candidate,
+    CostEntry,
     CostTracker,
     CrossfireConfiguration,
     ModelGroup,
@@ -28,14 +31,7 @@ from crossfire.core.domain import (
     Task,
 )
 from crossfire.core.exclamations import exclaim
-from crossfire.core.openrouter import (
-    MAX_RETRIES,
-    EmptyResponseError,
-    call_openrouter,
-    call_with_retry,
-    extract_cost,
-    extract_response_text,
-)
+from crossfire.core.pricing import PRICING_FILENAME, load_pricing
 from crossfire.core.progress import NoOpProgress, ProgressCallback
 from crossfire.core.prompts import (
     build_enrichment_prompt,
@@ -45,6 +41,20 @@ from crossfire.core.prompts import (
     parse_review_verdict,
     parse_synthesis_decision,
     strip_synthesis_decision,
+)
+from crossfire.core.providers import (
+    MAX_RETRIES,
+    AuthenticationError,
+    EmptyResponseError,
+    InsufficientCreditsError,
+    RefusalResponseError,
+    TruncatedResponseError,
+    Usage,
+    call_model,
+    call_with_retry,
+    extract_response_text,
+    extract_usage,
+    resolve_protocol,
 )
 from crossfire.core.reviewers import assign_reviewers
 from crossfire.core.search import (
@@ -66,6 +76,16 @@ _RETRIABLE_ERRORS: tuple[type[Exception], ...] = (
     json.JSONDecodeError,
     EmptyResponseError,
 )
+
+# Errors that warrant swapping in a different model rather than retrying the same call.
+_REPLACEABLE_ERRORS: tuple[type[Exception], ...] = (
+    *_RETRIABLE_ERRORS,
+    TruncatedResponseError,
+    RefusalResponseError,
+)
+
+# A rejected key or an empty wallet aborts the run: retrying the call or substituting a model changes nothing.
+_FATAL_ERRORS: tuple[type[Exception], ...] = (AuthenticationError, InsufficientCreditsError)
 
 ROLE_TO_PHASE: dict[Role, Phase] = {
     Role.ENRICHER: Phase.ENRICHMENT,
@@ -108,7 +128,7 @@ class Orchestrator:
         self.configuration = configuration
         self.parameters = parameters
         self.cost_tracker = CostTracker()
-        # Shared across all phases to cap concurrent OpenRouter HTTP requests,
+        # Shared across all phases to cap concurrent provider HTTP requests,
         # preventing rate-limit (429) errors and connection exhaustion.
         self._semaphore = asyncio.Semaphore(configuration.limits.max_concurrent_requests)
         self._api_key: str = ""
@@ -118,6 +138,8 @@ class Orchestrator:
         self._http_client: httpx.AsyncClient | None = None
         self._consecutive_round_failures = 0
         self._searches_performed: list[dict[str, str | int]] = []
+        self._session_id = f"crossfire-{uuid4()}"
+        self._pricing: dict[str, tuple[float, float]] | None = None
 
     # -- high-level entry point ---
 
@@ -129,6 +151,11 @@ class Orchestrator:
         )
         if errors:
             raise ValueError("; ".join(errors))
+
+        # No gateway lets a request waive its own retention, so the best Crossfire can do on the OpenCode
+        # gateways is say plainly what the chosen models do with the prompts.
+        for notice in self.configuration.data_policy_notices():
+            log.log_data_policy_notice(notice=notice)
 
         if not self.parameters.dry_run:
             self._api_key = get_api_key(self.configuration)
@@ -143,6 +170,8 @@ class Orchestrator:
             if self.parameters.enrich and self.configuration.enricher.names:
                 try:
                     self.parameters = await self._enrich_instruction()
+                except _FATAL_ERRORS as exception:
+                    raise RunFailedError(exclaim(str(exception))) from exception
                 except Exception as exception:
                     log.log_enrichment_failed(
                         model=self.configuration.enricher.names[0],
@@ -228,6 +257,7 @@ class Orchestrator:
             1,
             models=[model],
             candidate_indices=[None],
+            wire_model_ids=[self._wire_model_id(model)],
         )
         original_tokens = estimate_tokens(self.parameters.task.instruction)
         enriched = await self._call_llm(
@@ -236,6 +266,7 @@ class Orchestrator:
             user_prompt=user,
             role=Role.ENRICHER,
             round_num=0,
+            max_retries=0,
         )
         self._progress.on_task_done(0, Phase.ENRICHMENT, model=model)
         self._progress.on_phase_end(0, Phase.ENRICHMENT)
@@ -276,6 +307,10 @@ class Orchestrator:
 
     # -- single round ---
 
+    def _wire_model_id(self, model: str) -> str:
+        """Returns the wire model ID the active gateway actually bills for *model*."""
+        return self.configuration.active_provider().resolve_wire_model_id(model)
+
     async def _run_round(self, round_num: int, previous_synthesis: str) -> RoundResult | None:
         """Executes one generate -> review -> synthesize cycle, returning None on failure."""
 
@@ -313,10 +348,28 @@ class Orchestrator:
             for review in reviews:
                 self._archive.save_review(review)
 
+        reviewed_candidates = {review.candidate_index for review in reviews}
+        if self.parameters.num_reviewers_per_candidate > 0 and len(reviewed_candidates) < len(candidates):
+            missing = sorted({candidate.index for candidate in candidates} - reviewed_candidates)
+            log.log_round_failed(
+                round=round_num,
+                reason="incomplete_reviews",
+                details=f"No reviews for candidates {missing}",
+            )
+            return None
+
         # --- synthesis phase ---
         log.log_phase_start(round=round_num, phase=Phase.SYNTHESIS)
         synthesis = await self._run_synthesis(round_num, candidates, reviews)
         log.log_phase_end(round=round_num, phase=Phase.SYNTHESIS)
+
+        if synthesis is None:
+            log.log_round_failed(
+                round=round_num,
+                reason="synth_failure",
+                details="All synthesizer models failed",
+            )
+            return None
 
         if self._archive:
             self._archive.save_synthesis(synthesis)
@@ -333,7 +386,7 @@ class Orchestrator:
 
     # Refusals and regressions come in many forms (meta-critiques, source complaints,
     # "I can't do this" responses). Regex catches obvious phrases but sophisticated
-    # refusals slip through. A length check is more robust: legitimate refinement may
+    # refusals slip through. A length check catches more: legitimate refinement may
     # trim content, but a 50%+ drop in tokens signals that the synthesizer replaced
     # substance with commentary.
     _SYNTHESIS_REGRESSION_RATIO = 0.50
@@ -364,6 +417,7 @@ class Orchestrator:
             generator_count,
             models=generator_models,
             candidate_indices=[None] * generator_count,
+            wire_model_ids=[self._wire_model_id(model) for model in generator_models],
         )
 
         async def _generate(index: int, model: str) -> Candidate:
@@ -388,12 +442,15 @@ class Orchestrator:
         candidates: list[Candidate] = []
         for index, result in enumerate(results):
             if isinstance(result, Exception):
+                if isinstance(result, _FATAL_ERRORS):
+                    raise RunFailedError(exclaim(str(result))) from result
                 model = generator_names[index % len(generator_names)]
                 log.log_model_dropped(
                     phase=Phase.GENERATION,
                     role=Role.GENERATOR,
                     model=model,
                     round=round_num,
+                    wire_model_id=self._wire_model_id(model),
                     reason=f"generation_error:{type(result).__name__}",
                 )
             else:
@@ -411,16 +468,23 @@ class Orchestrator:
         assigned_generators: set[str],
         lock: asyncio.Lock,
     ) -> Candidate:
-        """Attempts generation, falling back to a different model on refusal."""
+        """Attempts generation, falling back to a different model on refusal or truncation."""
         try:
             return await self._generate_candidate(round_num, index, model, previous_synthesis)
-        except RefusalError:
+        except (RefusalError, TruncatedResponseError, RefusalResponseError) as exception:
+            if isinstance(exception, TruncatedResponseError):
+                reason = "truncated"
+            elif isinstance(exception, RefusalResponseError):
+                reason = "model_refusal"
+            else:
+                reason = "refusal"
             log.log_model_dropped(
                 phase=Phase.GENERATION,
                 role=Role.GENERATOR,
                 model=model,
                 round=round_num,
-                reason="refusal",
+                wire_model_id=self._wire_model_id(model),
+                reason=reason,
             )
             replacement = await self._find_replacement_generator(
                 self.configuration.generators.names,
@@ -434,7 +498,7 @@ class Orchestrator:
                     role=Role.GENERATOR,
                     model=model,
                     attempt=MAX_RETRIES + 1,
-                    reason=f"refusal, replacing with {replacement}",
+                    reason=f"{reason}, replacing with {replacement}",
                 )
                 return await self._generate_candidate(round_num, index, replacement, previous_synthesis)
             raise
@@ -528,7 +592,12 @@ class Orchestrator:
     # -- review ---
 
     async def _run_review(self, round_num: int, candidates: list[Candidate]) -> list[Review] | None:
-        """Assigns reviewers and runs all reviews in parallel."""
+        """Assigns reviewers and runs all reviews in parallel.
+
+        Returns ``None`` only when the reviewer pool is too small to cover every candidate. Otherwise it
+        returns whatever reviews succeeded, which may be partial: coverage is judged by the caller so that
+        successful reviews survive a failed round rather than being discarded with it.
+        """
         if self.parameters.num_reviewers_per_candidate == 0:
             return []
 
@@ -539,7 +608,6 @@ class Orchestrator:
             num_candidates=len(candidates),
             num_reviewers_per_candidate=self.parameters.num_reviewers_per_candidate,
             round_num=round_num,
-            models_used_this_round=set(),
         )
 
         if assignments is None:
@@ -558,6 +626,7 @@ class Orchestrator:
             total_reviews,
             models=review_models,
             candidate_indices=review_cand_indices,
+            wire_model_ids=[self._wire_model_id(model) for model in review_models],
         )
 
         async def _review_task(
@@ -607,22 +676,20 @@ class Orchestrator:
         reviews: list[Review] = []
         for (_candidate_index, reviewer_model), result in zip(task_metadata, results, strict=True):
             if isinstance(result, Exception):
+                if isinstance(result, _FATAL_ERRORS):
+                    raise RunFailedError(exclaim(str(result))) from result
                 log.log_model_dropped(
                     phase=Phase.REVIEW,
                     role=Role.REVIEWER,
                     model=reviewer_model,
                     round=round_num,
+                    wire_model_id=self._wire_model_id(reviewer_model),
                     reason=f"review_error:{type(result).__name__}",
                 )
                 continue
             reviews.append(cast(Review, result))
 
         self._progress.on_phase_end(round_num, Phase.REVIEW)
-
-        reviewed_candidates = {review.candidate_index for review in reviews}
-        if len(reviewed_candidates) < len(candidates):
-            return None
-
         return reviews
 
     async def _review_candidate(
@@ -652,7 +719,7 @@ class Orchestrator:
                 candidate=candidate,
                 round_num=round_num,
             )
-        except _RETRIABLE_ERRORS:
+        except _REPLACEABLE_ERRORS:
             replacement = await self._find_replacement_reviewer(
                 all_reviewer_names,
                 assigned_reviewers,
@@ -740,38 +807,45 @@ class Orchestrator:
 
     # -- synthesis ---
 
-    def _pick_synthesizer_model(self, round_num: int) -> str:
-        """Picks the synthesizer model by rotating through the pool."""
-        names = self.configuration.synthesizer.names
-        return names[(round_num - 1) % len(names)]
-
     async def _run_synthesis(
         self,
         round_num: int,
         candidates: list[Candidate],
         reviews: list[Review],
-    ) -> SynthesisResult:
-        """Manages synthesis progress and error handling, delegating the actual work to ``_synthesize``."""
-        model = self._pick_synthesizer_model(round_num)
+    ) -> SynthesisResult | None:
+        """Runs synthesis, rotating through the pool and falling back on failure.
+
+        Returns None when every synthesizer model fails, which the round loop treats as a failed round. A refusal or
+        truncation is model-specific, so the next synthesizer may still succeed; only a rejected key or an empty wallet
+        aborts the run outright.
+        """
+        names = self.configuration.synthesizer.names
+        start = (round_num - 1) % len(names)
+        ordered = [names[(start + offset) % len(names)] for offset in range(len(names))]
         self._progress.on_phase_start(
             round_num,
             Phase.SYNTHESIS,
             1,
-            models=[model],
+            models=[ordered[0]],
             candidate_indices=[None],
+            wire_model_ids=[self._wire_model_id(ordered[0])],
         )
-
         try:
-            return await self._synthesize(round_num, model, candidates, reviews)
-        except RunFailedError:
-            raise
-        except Exception as exception:
-            log.log_run_failed(
-                round=round_num,
-                reason="synth_failure",
-                details=str(exception),
-            )
-            raise RunFailedError(exclaim(f"Synthesis blew up in round {round_num}: {exception}")) from exception
+            for model in ordered:
+                try:
+                    return await self._synthesize(round_num, model, candidates, reviews)
+                except _FATAL_ERRORS as exception:
+                    raise RunFailedError(exclaim(str(exception))) from exception
+                except Exception as exception:
+                    log.log_model_dropped(
+                        phase=Phase.SYNTHESIS,
+                        role=Role.SYNTHESIZER,
+                        model=model,
+                        round=round_num,
+                        wire_model_id=self._wire_model_id(model),
+                        reason=f"synth_error:{type(exception).__name__}",
+                    )
+            return None
         finally:
             self._progress.on_phase_end(round_num, Phase.SYNTHESIS)
 
@@ -805,7 +879,6 @@ class Orchestrator:
             role=Role.SYNTHESIZER,
             model=model,
             round_num=round_num,
-            fatal_on_overflow=True,
         )
 
         text = await self._call_llm(
@@ -854,12 +927,10 @@ class Orchestrator:
         role: Role,
         model: str,
         round_num: int,
-        fatal_on_overflow: bool = False,
     ) -> str:
         """Compresses *user_prompt* to fit the token budget.
 
-        When *fatal_on_overflow* is True, raises RunFailedError (for synthesizer); otherwise raises RuntimeError (for
-        generator/reviewer).
+        Raises RuntimeError on overflow, which drops the model and degrades the run instead of aborting it.
         """
         user_prompt, fits = compress_prompt_components(
             system_prompt=system_prompt,
@@ -879,12 +950,13 @@ class Orchestrator:
                 role=role,
                 model=model,
                 round=round_num,
+                wire_model_id=self._wire_model_id(model),
                 tokens_before=tokens,
                 tokens_after=tokens,
                 reason="token_overflow",
             )
             msg: str = f"Token overflow for {role} {model}"
-            raise RunFailedError(exclaim(msg)) if fatal_on_overflow else RuntimeError(exclaim(msg))
+            raise RuntimeError(exclaim(msg))
         return user_prompt
 
     async def _process_search_request(
@@ -939,6 +1011,35 @@ class Orchestrator:
             return self.configuration.synthesizer
         return self.configuration.enricher
 
+    def _load_pricing(self) -> dict[str, tuple[float, float]]:
+        """Lazily loads the pricing cache; returns an empty map when unavailable."""
+        if self._pricing is not None:
+            return self._pricing
+        self._pricing = {}
+        path = Path(PRICING_FILENAME)
+        if path.is_file():
+            try:
+                self._pricing, _ = load_pricing(path)
+            except (ValueError, OSError):
+                self._pricing = {}
+        return self._pricing
+
+    def _compute_cost(self, provider_name: str, wire_model_id: str, usage: Usage) -> float | None:
+        """Derives a cost from the pricing table when the provider does not report one.
+
+        The pricing table has no cache-specific rates. If the usage report includes cache reads or writes and the
+        provider reports no cost figure, this function returns ``None``. The caller lists the model in
+        ``unpriced_models``.
+        """
+        if usage.cache_read_tokens or usage.cache_write_tokens:
+            return None
+        pricing = self._load_pricing()
+        entry = pricing.get(f"{provider_name}::{wire_model_id}") or pricing.get(wire_model_id)
+        if entry is None:
+            return None
+        input_price, output_price = entry
+        return usage.input_tokens * input_price + usage.output_tokens * output_price
+
     async def _call_llm(
         self,
         *,
@@ -948,8 +1049,13 @@ class Orchestrator:
         role: Role,
         round_num: int,
         dry_run_candidate_index: int | None = None,
+        max_retries: int | None = None,
     ) -> str:
-        """Dispatches to a simulated response (dry run) or the real OpenRouter API."""
+        """Dispatches to a simulated response (dry run) or the active provider's API.
+
+        *max_retries* defaults to ``MAX_RETRIES``; the optional enrichment step passes 0 so a flaky model cannot
+        stall the run with repeated timeouts.
+        """
         if self.parameters.dry_run:
             return simulate_response(
                 instruction=self.parameters.task.instruction,
@@ -965,20 +1071,32 @@ class Orchestrator:
             raise RuntimeError(exclaim("HTTP client not initialized. Are you perhaps in dry-run mode?"))
         http_client: httpx.AsyncClient = self._http_client
 
+        provider = self.configuration.active_provider()
+        wire_model_id = provider.resolve_wire_model_id(model)
+        protocol = resolve_protocol(provider, wire_model_id)
+        # Frontier models on the messages/responses protocols reject sampling controls, so temperature is only
+        # sent on the OpenAI-compatible chat protocol.
+        temperature = self.configuration.limits.temperature_for(role) if protocol == "chat" else None
+        reasoning_effort = self.configuration.limits.reasoning_effort_for(role)
+
         # Both the HTTP call and response extraction are inside the retry loop
         # so that empty-but-200 responses (EmptyResponseError) are retried.
         async def _call_and_extract() -> dict[str, Any]:
-            data: dict[str, Any] = await call_openrouter(
-                model=model,
+            data: dict[str, Any] = await call_model(
+                provider=provider,
+                protocol=protocol,
+                wire_model_id=wire_model_id,
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
                 api_key=self._api_key,
-                temperature=self.configuration.limits.temperature_default,
                 max_tokens=self._role_group(role).resolve_max_output_tokens(model),
+                temperature=temperature,
                 semaphore=self._semaphore,
                 client=http_client,
+                session_id=self._session_id,
+                reasoning_effort=reasoning_effort,
             )
-            extract_response_text(data)  # raises EmptyResponseError if empty
+            extract_response_text(protocol, data)  # raises Empty/TruncatedResponseError
             return data
 
         data: dict[str, Any] = await call_with_retry(
@@ -986,8 +1104,25 @@ class Orchestrator:
             role=role,
             model=model,
             round_num=round_num,
+            provider_name=provider.name,
+            max_retries=MAX_RETRIES if max_retries is None else max_retries,
         )
 
-        self.cost_tracker.record(extract_cost(data, model, role, round_num))
+        usage = extract_usage(protocol, data)
+        cost = usage.cost if usage.cost is not None else self._compute_cost(provider.name, wire_model_id, usage)
+        self.cost_tracker.record(
+            CostEntry(
+                model=model,
+                role=role,
+                round=round_num,
+                input_tokens=usage.input_tokens,
+                output_tokens=usage.output_tokens,
+                cache_read_tokens=usage.cache_read_tokens,
+                cache_write_tokens=usage.cache_write_tokens,
+                cost=cost,
+                provider=provider.name,
+                wire_model_id=wire_model_id,
+            )
+        )
 
-        return extract_response_text(data)
+        return extract_response_text(protocol, data)

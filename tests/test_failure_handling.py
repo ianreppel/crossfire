@@ -2,13 +2,20 @@
 
 from __future__ import annotations
 
+import asyncio
+from dataclasses import replace
+
 import pytest
 
+from crossfire.core.archive import RunArchive
 from crossfire.core.domain import (
+    DEFAULT_PROVIDER_CONFIGURATIONS,
+    Candidate,
     CrossfireConfiguration,
     LimitsConfiguration,
     Mode,
     ModelGroup,
+    ProviderConfiguration,
     Review,
     RunParameters,
     SearchConfiguration,
@@ -16,8 +23,60 @@ from crossfire.core.domain import (
     Task,
 )
 from crossfire.core.orchestrator import _REFUSAL_REGEX, Orchestrator, RefusalError
+from crossfire.core.providers import RefusalResponseError, TruncatedResponseError
 from crossfire.core.reviewers import assign_reviewers
 from tests.helpers import LogCapture
+
+
+class TestSynthesisFallback:
+    def _orchestrator(self) -> Orchestrator:
+        configuration = CrossfireConfiguration(
+            generators=ModelGroup(names=("gen-a",), context_window=16000),
+            reviewers=ModelGroup(names=("rev-a",), context_window=16000),
+            synthesizer=ModelGroup(names=("synth-a", "synth-b"), context_window=32000),
+            search=SearchConfiguration(enabled=False),
+            limits=LimitsConfiguration(),
+        )
+        parameters = RunParameters(
+            mode=Mode.RESEARCH,
+            task=Task(instruction="Test"),
+            num_generators=1,
+            num_reviewers_per_candidate=1,
+            num_rounds=1,
+            dry_run=True,
+            early_stop=False,
+        )
+        return Orchestrator(configuration, parameters)
+
+    @pytest.mark.asyncio
+    async def test_refusal_falls_back_to_the_next_synthesizer(self, clean_logger):
+        orchestrator = self._orchestrator()
+        calls: list[str] = []
+
+        async def fake_synthesize(round_num, model, candidates, reviews):
+            calls.append(model)
+            if model == "synth-a":
+                raise RefusalResponseError("refused")
+            return SynthesisResult(text="merged", model=model, round=round_num)
+
+        orchestrator._synthesize = fake_synthesize  # type: ignore[assignment]
+        result = await orchestrator._run_synthesis(round_num=1, candidates=[], reviews=[])
+
+        assert result is not None
+        assert result.model == "synth-b"
+        assert calls == ["synth-a", "synth-b"]
+
+    @pytest.mark.asyncio
+    async def test_all_synthesizers_failing_returns_none(self, clean_logger):
+        orchestrator = self._orchestrator()
+
+        async def fake_synthesize(round_num, model, candidates, reviews):
+            raise RefusalResponseError("refused")
+
+        orchestrator._synthesize = fake_synthesize  # type: ignore[assignment]
+        result = await orchestrator._run_synthesis(round_num=1, candidates=[], reviews=[])
+
+        assert result is None
 
 
 class TestReviewerAssignment:
@@ -27,7 +86,6 @@ class TestReviewerAssignment:
             num_candidates=2,
             num_reviewers_per_candidate=2,
             round_num=1,
-            models_used_this_round=set(),
         )
         assert result is not None
         assert len(result) == 2
@@ -40,25 +98,116 @@ class TestReviewerAssignment:
             num_candidates=2,
             num_reviewers_per_candidate=2,
             round_num=1,
-            models_used_this_round=set(),
         )
         assert result is None
 
-    def test_filters_explicitly_excluded_models(self):
-        result = assign_reviewers(
-            reviewers=["r1", "r2", "r3", "r4"],
+    @staticmethod
+    def _window(round_num: int) -> dict[int, list[str]] | None:
+        return assign_reviewers(
+            reviewers=["cheap-1", "cheap-2", "cheap-3", "cheap-4"],
             num_candidates=1,
             num_reviewers_per_candidate=2,
-            round_num=1,
-            models_used_this_round={"r1", "r3"},
+            round_num=round_num,
         )
-        assert result is not None
-        assigned_models = [name for group in result.values() for name in group]
-        assert "r1" not in assigned_models
-        assert "r3" not in assigned_models
+
+    def test_round_window_slides_through_the_cheapest_first_pool(self):
+        """Reviewers are listed cheapest-first, and the window slides one place each round."""
+        assert self._window(1) == {0: ["cheap-1", "cheap-2"]}
+        assert self._window(2) == {0: ["cheap-2", "cheap-3"]}
+        assert self._window(3) == {0: ["cheap-3", "cheap-4"]}
+        # The window wraps, so a long run reuses the pool rather than running out.
+        assert self._window(4) == {0: ["cheap-4", "cheap-1"]}
+
+    def test_zero_reviewers_yields_empty_assignment(self):
+        assert (
+            assign_reviewers(
+                reviewers=["r1"],
+                num_candidates=1,
+                num_reviewers_per_candidate=0,
+                round_num=1,
+            )
+            == {}
+        )
 
 
 class TestRoundFailure:
+    @pytest.mark.asyncio
+    async def test_incomplete_reviews_are_archived_before_round_fails(self, clean_logger, tmp_path):
+        configuration = CrossfireConfiguration(
+            generators=ModelGroup(names=("gen-a",), context_window=16000),
+            reviewers=ModelGroup(names=("rev-a",), context_window=16000),
+            synthesizer=ModelGroup(names=("synth-a",), context_window=32000),
+            search=SearchConfiguration(enabled=False),
+        )
+        parameters = RunParameters(
+            mode=Mode.RESEARCH,
+            task=Task(instruction="Test", context=""),
+            num_generators=2,
+            num_reviewers_per_candidate=1,
+            num_rounds=1,
+            dry_run=True,
+        )
+        capture = LogCapture()
+        clean_logger.addHandler(capture)
+        orchestrator = Orchestrator(configuration, parameters, archive=RunArchive(tmp_path))
+
+        async def fake_generation(round_num, previous_synthesis):
+            return [
+                Candidate(text="candidate one", model="gen-a", round=round_num, index=0),
+                Candidate(text="candidate two", model="gen-a", round=round_num, index=1),
+            ]
+
+        async def partial_review(round_num, candidates):
+            return [Review(text="partial review", model="rev-a", round=round_num, candidate_index=0)]
+
+        orchestrator._run_generation = fake_generation  # type: ignore[assignment]
+        orchestrator._run_review = partial_review  # type: ignore[assignment]
+
+        result = await orchestrator._run_round(1, "")
+
+        assert result is None
+        assert (tmp_path / "round-1" / "review-c0-rev-a.md").read_text() == "partial review"
+        failures = [event for event in capture.records if event.get("event") == "round_failed"]
+        assert failures[-1]["reason"] == "incomplete_reviews"
+        assert failures[-1]["details"] == "No reviews for candidates [1]"
+
+    @pytest.mark.asyncio
+    async def test_zero_reviewers_round_proceeds_to_synthesis(self, clean_logger):
+        """Reviews disabled: the coverage check does not apply and the round synthesizes."""
+        configuration = CrossfireConfiguration(
+            generators=ModelGroup(names=("gen-a",), context_window=16000),
+            reviewers=ModelGroup(names=("rev-a",), context_window=16000),
+            synthesizer=ModelGroup(names=("synth-a",), context_window=32000),
+            search=SearchConfiguration(enabled=False),
+        )
+        parameters = RunParameters(
+            mode=Mode.RESEARCH,
+            task=Task(instruction="Test", context=""),
+            num_generators=1,
+            num_reviewers_per_candidate=0,
+            num_rounds=1,
+            dry_run=True,
+        )
+        capture = LogCapture()
+        clean_logger.addHandler(capture)
+        orchestrator = Orchestrator(configuration, parameters)
+
+        async def fake_generation(round_num, previous_synthesis):
+            return [Candidate(text="candidate one", model="gen-a", round=round_num, index=0)]
+
+        async def fake_synthesis(round_num, candidates, reviews):
+            return SynthesisResult(text="synthesized", model="synth-a", round=round_num)
+
+        orchestrator._run_generation = fake_generation  # type: ignore[assignment]
+        orchestrator._run_synthesis = fake_synthesis  # type: ignore[assignment]
+
+        result = await orchestrator._run_round(1, "")
+
+        assert result is not None
+        assert result.synthesis_text == "synthesized"
+        failures = [event for event in capture.records if event.get("event") == "round_failed"]
+        assert failures == []
+
     @pytest.mark.asyncio
     async def test_consecutive_round_failures_abort_run(self, clean_logger):
         """Uses 3 reviewers for a 2*2=4 requirement to force runtime failures (bypasses validation)."""
@@ -163,6 +312,37 @@ class TestConfigurationValidation:
         )
         errors = configuration.validate(num_generators=1, num_reviewers_per_candidate=2)
         assert any("synthesizer" in e.lower() for e in errors)
+
+    def test_provider_without_base_url_fails(self):
+        configuration = CrossfireConfiguration(
+            provider="acme",
+            providers=(ProviderConfiguration(name="acme", base_url="", api_key_env="ACME_API_KEY"),),
+            generators=ModelGroup(names=("gen-a",), context_window=16000),
+            reviewers=ModelGroup(names=("rev-a", "rev-b"), context_window=16000),
+            synthesizer=ModelGroup(names=("synth-a",), context_window=32000),
+        )
+        errors = configuration.validate(num_generators=1, num_reviewers_per_candidate=2)
+        assert any("base_url" in error for error in errors)
+
+    def test_unconfigured_prefix_remains_in_model_id(self) -> None:
+        # Only configured provider names before the first colon pin a model to a gateway.
+        # An unconfigured prefix remains in the model ID, so validation accepts that ID.
+        configuration = CrossfireConfiguration(
+            generators=ModelGroup(names=("opencodego:glm-5.3",), context_window=16000),
+            reviewers=ModelGroup(names=("rev-a", "rev-b"), context_window=16000),
+            synthesizer=ModelGroup(names=("synth-a",), context_window=32000),
+        )
+        errors = configuration.validate(num_generators=1, num_reviewers_per_candidate=2)
+        assert not any("prefix" in error for error in errors)
+
+    def test_configured_provider_prefix_passes(self):
+        configuration = CrossfireConfiguration(
+            generators=ModelGroup(names=("openrouter:perplexity/sonar-pro",), context_window=16000),
+            reviewers=ModelGroup(names=("rev-a", "rev-b"), context_window=16000),
+            synthesizer=ModelGroup(names=("synth-a",), context_window=32000),
+        )
+        errors = configuration.validate(num_generators=1, num_reviewers_per_candidate=2)
+        assert not any("prefix" in error for error in errors)
 
 
 class TestShouldStopEarly:
@@ -271,6 +451,52 @@ class TestRefusalDetection:
         assert len(dropped) == 1
 
     @pytest.mark.asyncio
+    async def test_truncation_triggers_replacement_generator(self, clean_logger):
+        """A truncated output swaps the generator like a refusal does, with the billed model in the event."""
+        configuration = CrossfireConfiguration(
+            providers=tuple(
+                replace(provider, model_ids=(("gen-a", "wire-gen-a"),)) if provider.name == "opencode" else provider
+                for provider in DEFAULT_PROVIDER_CONFIGURATIONS
+            ),
+            generators=ModelGroup(names=("gen-a", "gen-b"), context_window=16000),
+            reviewers=ModelGroup(names=("rev-a", "rev-b", "rev-c"), context_window=16000),
+            synthesizer=ModelGroup(names=("synth-a",), context_window=32000),
+            search=SearchConfiguration(enabled=False),
+            limits=LimitsConfiguration(),
+        )
+        parameters = RunParameters(
+            mode=Mode.RESEARCH,
+            task=Task(instruction="Test"),
+            num_generators=1,
+            num_reviewers_per_candidate=2,
+            num_rounds=1,
+            dry_run=True,
+        )
+
+        capture = LogCapture()
+        clean_logger.addHandler(capture)
+
+        orchestrator = Orchestrator(configuration, parameters)
+        original_generate = orchestrator._generate_candidate
+        call_count: int = 0
+
+        async def _mock_generate(round_num, index, model, previous_synthesis):
+            nonlocal call_count
+            call_count += 1
+            if model == "gen-a":
+                raise TruncatedResponseError("gen-a ran out of output budget")
+            return await original_generate(round_num, index, model, previous_synthesis)
+
+        orchestrator._generate_candidate = _mock_generate  # type: ignore[assignment]
+        result = await orchestrator.run()
+
+        assert result.strip(), "Replacement generator should have produced output"
+        assert call_count == 2
+        dropped = [e for e in capture.records if e.get("event") == "model_dropped" and e.get("reason") == "truncated"]
+        assert len(dropped) == 1
+        assert dropped[0]["wire_model_id"] == "wire-gen-a"
+
+    @pytest.mark.asyncio
     async def test_synthesis_regression_carries_forward_previous(self, clean_logger):
         configuration = CrossfireConfiguration(
             generators=ModelGroup(names=("gen-a",), context_window=16000),
@@ -354,3 +580,51 @@ class TestRefusalDetection:
         assert result.strip(), "Should have carried forward round 1 synthesis"
         regressions = [e for e in capture.records if e.get("event") == "synthesis_regression"]
         assert len(regressions) == 1
+
+
+class TestReviewerReplacement:
+    @pytest.mark.asyncio
+    async def test_truncated_reviewer_is_replaced(self, clean_logger):
+        """Reviewer-side replaceable errors (truncation, refusal) swap in a spare reviewer."""
+        configuration = CrossfireConfiguration(
+            generators=ModelGroup(names=("gen-a",), context_window=16000),
+            reviewers=ModelGroup(names=("rev-a", "rev-b"), context_window=16000),
+            synthesizer=ModelGroup(names=("synth-a",), context_window=32000),
+            search=SearchConfiguration(enabled=False),
+            limits=LimitsConfiguration(),
+        )
+        parameters = RunParameters(
+            mode=Mode.RESEARCH,
+            task=Task(instruction="Test"),
+            num_generators=1,
+            num_reviewers_per_candidate=1,
+            num_rounds=1,
+            dry_run=True,
+        )
+
+        capture = LogCapture()
+        clean_logger.addHandler(capture)
+
+        orchestrator = Orchestrator(configuration, parameters)
+
+        async def fake_review(*, model, system_prompt, user_prompt_raw, candidate, round_num):
+            if model == "rev-a":
+                raise TruncatedResponseError("rev-a ran out of output budget")
+            return "substantive review"
+
+        orchestrator._review = fake_review  # type: ignore[assignment]
+        candidate = Candidate(text="candidate", model="gen-a", round=1, index=0)
+        review = await orchestrator._review_candidate(
+            round_num=1,
+            candidate=candidate,
+            reviewer_model="rev-a",
+            all_reviewer_names=["rev-a", "rev-b"],
+            assigned_reviewers={"rev-a"},
+            replacement_claim_lock=asyncio.Lock(),
+        )
+
+        assert review.model == "rev-b"
+        retries = [
+            e for e in capture.records if e.get("event") == "retry" and "replacing with rev-b" in e.get("reason", "")
+        ]
+        assert len(retries) == 1

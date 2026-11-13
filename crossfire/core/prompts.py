@@ -6,6 +6,7 @@ import json
 import re
 from collections import defaultdict
 from dataclasses import dataclass, field
+from typing import Any
 
 from crossfire.core.domain import Candidate, CandidateDecision, Mode, Review
 
@@ -428,6 +429,10 @@ def build_synthesizer_prompt(
     rules: str | None = None,
 ) -> tuple[str, str]:
     rules_text = rules or MODE_RULES[mode]
+    # The attribution block is essential. Fable refuses it (a safety-classifier false positive on
+    # instructions to keep/discard/attribute candidate content, reproduced live across many phrasings),
+    # so Fable reviews instead. Opus 5.5 accepts the block, so Claude can still synthesise.
+    # See the synthesizer pool in crossfire.toml.
     system = _SYNTHESIZER_SYSTEM[mode] + _SYNTHESIS_FORMAT
 
     parts: list[str] = [
@@ -449,41 +454,114 @@ def build_synthesizer_prompt(
     return system, user
 
 
-def parse_synthesis_decision(text: str) -> tuple[list[CandidateDecision], str]:
-    """Extracts the structured attribution decision from synthesizer output.
+_FENCED_BLOCK_REGEX = re.compile(r"```([a-zA-Z0-9_-]*)[ \t]*\n(.*?)```[ \t]*\n?", re.DOTALL)
 
-    Returns ``(decisions, notes)`` where *decisions* is a list of
-    :class:`CandidateDecision` and *notes* is the rationale string.
-    Returns ``([], "")`` when no valid JSON block is found.
+
+def _parse_decision_json(text: str) -> dict[str, Any] | None:
+    """Parses the decision object from JSON text with a top-level ``crossfire_synthesis`` key.
+
+    Returns ``None`` if the JSON is invalid or lacks an object under that key.
     """
-    for line in text.split("\n"):
-        line = line.strip()
-        if "crossfire_synthesis" not in line:
-            continue
-        try:
-            parsed = json.loads(line)
-            dec = parsed.get("crossfire_synthesis", {})
-        except (json.JSONDecodeError, TypeError):
-            continue
+    stripped = text.strip()
+    if "crossfire_synthesis" not in stripped:
+        return None
+    try:
+        parsed = json.loads(stripped)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(parsed, dict) or not isinstance(parsed.get("crossfire_synthesis"), dict):
+        return None
+    decision: dict[str, Any] = parsed["crossfire_synthesis"]
+    return decision
 
-        notes = dec.get("notes", "")
 
-        decisions = []
-        for entry in dec.get("attributions", []):
-            decisions.append(
-                CandidateDecision(
-                    index=entry.get("index", 0),
-                    kept=entry.get("kept", []),
-                    discarded=entry.get("discarded", []),
-                )
+def _parse_decision_block(body: str) -> dict[str, Any] | None:
+    """Parses a decision object from a complete JSON body or a standalone JSON object on its own line.
+
+    Returns ``None`` if no object exists under the top-level ``crossfire_synthesis`` key.
+    """
+    decision = _parse_decision_json(body)
+    if decision is not None:
+        return decision
+    for line in body.split("\n"):
+        decision = _parse_decision_json(line)
+        if decision is not None:
+            return decision
+    return None
+
+
+def _first_synthesis_decision(text: str) -> dict[str, Any] | None:
+    """Returns the first decision from a standalone JSON object on its own line or from a fenced object.
+
+    Standalone objects must be outside code fences. Fenced objects must be unlabelled or marked ``json``.
+    Returns ``None`` if no decision is found.
+    """
+    cursor = 0
+    for match in _FENCED_BLOCK_REGEX.finditer(text):
+        for line in text[cursor : match.start()].split("\n"):
+            decision = _parse_decision_json(line)
+            if decision is not None:
+                return decision
+        language, body = match.group(1), match.group(2)
+        if language.lower() in ("", "json"):
+            decision = _parse_decision_block(body)
+            if decision is not None:
+                return decision
+        cursor = match.end()
+    for line in text[cursor:].split("\n"):
+        decision = _parse_decision_json(line)
+        if decision is not None:
+            return decision
+    return None
+
+
+def parse_synthesis_decision(text: str) -> tuple[list[CandidateDecision], str]:
+    """Extracts candidate decisions and notes from synthesizer output.
+
+    The parser reads standalone JSON objects, each on its own line, outside code fences.
+    It also reads JSON objects inside unlabelled fences or fences marked ``json``.
+    Each object must have the top-level ``crossfire_synthesis`` key.
+    Returns ``([], "")`` when it finds no valid decision object.
+    """
+    decision_data = _first_synthesis_decision(text)
+    if decision_data is None:
+        return [], ""
+
+    notes = decision_data.get("notes", "")
+
+    decisions: list[CandidateDecision] = []
+    for entry in decision_data.get("attributions", []):
+        decisions.append(
+            CandidateDecision(
+                index=entry.get("index", 0),
+                kept=entry.get("kept", []),
+                discarded=entry.get("discarded", []),
             )
-        return decisions, notes
+        )
+    return decisions, notes
 
-    return [], ""
+
+def _strip_bare_decision_lines(text: str) -> str:
+    """Removes standalone JSON objects, each on its own line, with the top-level key outside code fences."""
+    lines = [line for line in text.split("\n") if _parse_decision_json(line) is None]
+    return "\n".join(lines)
 
 
 def strip_synthesis_decision(text: str) -> str:
-    """Removes the ``crossfire_synthesis`` JSON line from synthesizer output."""
-    lines: list[str] = text.split("\n")
-    cleaned: list[str] = [line for line in lines if "crossfire_synthesis" not in line]
-    return "\n".join(cleaned).strip()
+    """Removes standalone JSON objects, each on its own line, and fenced blocks with a top-level ``crossfire_synthesis``
+    key.
+
+    Standalone objects are removed only outside code fences. Fenced blocks are removed only when unlabelled or marked
+    ``json`` and they contain a JSON object with the key. Other fences and text outside removed blocks remain unchanged.
+    """
+
+    parts: list[str] = []
+    cursor = 0
+    for match in _FENCED_BLOCK_REGEX.finditer(text):
+        parts.append(_strip_bare_decision_lines(text[cursor : match.start()]))
+        language, body = match.group(1), match.group(2)
+        if language.lower() not in ("", "json") or _parse_decision_block(body) is None:
+            parts.append(match.group(0))
+        cursor = match.end()
+    parts.append(_strip_bare_decision_lines(text[cursor:]))
+    return "".join(parts).strip()

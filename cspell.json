@@ -34,6 +34,10 @@
     "deepseek",
     "sonnet",
     "mistral",
+    "iceman",
+    "nemotron",
+    "minimax",
+    "qwen",
     "sonar",
     "maverick",
     "antecedents",
@@ -54,6 +58,9 @@
     "pycache",
     "orch",
     "logmod",
-    "Wiggum"
+    "Wiggum",
+    "OpenCode",
+    "opencode",
+    "untokenize"
   ]
 }
