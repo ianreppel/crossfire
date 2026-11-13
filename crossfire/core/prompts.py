@@ -518,7 +518,7 @@ def _first_synthesis_decision(text: str) -> dict[str, Any] | None:
 def parse_synthesis_decision(text: str) -> tuple[list[CandidateDecision], str]:
     """Extracts candidate decisions and notes from synthesizer output.
 
-    The parser reads standalone JSON objects on their own lines outside code fences.
+    The parser reads standalone JSON objects, each on its own line, outside code fences.
     It also reads JSON objects inside unlabelled fences or fences marked ``json``.
     Each object must have the top-level ``crossfire_synthesis`` key.
     Returns ``([], "")`` when it finds no valid decision object.
@@ -542,13 +542,14 @@ def parse_synthesis_decision(text: str) -> tuple[list[CandidateDecision], str]:
 
 
 def _strip_bare_decision_lines(text: str) -> str:
-    """Removes JSON objects with the top-level ``crossfire_synthesis`` key from their own lines outside code fences."""
+    """Removes standalone JSON objects, each on its own line, with the top-level key outside code fences."""
     lines = [line for line in text.split("\n") if _parse_decision_json(line) is None]
     return "\n".join(lines)
 
 
 def strip_synthesis_decision(text: str) -> str:
-    """Removes single-line JSON objects and fenced blocks with a top-level ``crossfire_synthesis`` key.
+    """Removes standalone JSON objects, each on its own line, and fenced blocks with a top-level ``crossfire_synthesis``
+    key.
 
     Standalone objects are removed only outside code fences. Fenced blocks are removed only when unlabelled or marked
     ``json`` and they contain a JSON object with the key. Other fences and text outside removed blocks remain unchanged.

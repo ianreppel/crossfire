@@ -22,13 +22,13 @@
 - `model_dropped` events and the progress display name the billed wire model ID when the gateway substitutes the neutral slug.
 - Crossfire checks refusal and truncation statuses before returning response text.
 - Crossfire removes the provider pin for the selected gateway before alias lookup, so protocol selection and cost estimates use the resolved wire ID.
-- Synthesis cleanup removes single-line JSON objects with a top-level `crossfire_synthesis` key outside code fences.
+- Synthesis cleanup removes standalone JSON objects, each on its own line, with a top-level `crossfire_synthesis` key outside code fences.
   It also removes entire unlabelled or `json`-labelled fenced blocks that contain an object with that top-level key.
 - Synthesis cleanup preserves other code fences and text outside removed blocks, including prose that mentions `crossfire_synthesis`.
 - If the usage report includes cache reads or writes and the provider reports no cost, Crossfire lists the model in `unpriced_models` and omits the call's cost estimate.
 - Removed the dead `fatal_on_overflow` parameter.
 - The non-gating drift probe reports mismatches but exits with status 0.
-- Removed the dead `models_used_this_round` parameter. Round rotation already covers freshness.
+- Removed the dead `models_used_this_round` parameter. Round rotation already varies the model set each round.
 
 ## [0.3.0] - 2026-09-24
 

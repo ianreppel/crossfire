@@ -177,7 +177,7 @@ The controls differ by gateway:
   - OpenCode Zen offers no per-request controls over retention or data use for training or model improvement.
 - [`opencode-go`](https://opencode.ai/docs/go/#privacy)
   - By default, Crossfire refuses runs that use a model in Crossfire's OpenCode Go training table.
-  - OpenCode Go offers no per-request controls over retention or training.
+  - OpenCode Go offers no per-request controls over retention or data use for training.
   - OpenCode Go retains prompts for 30 days for Grok 4.7, GPT-6 Luna, GPT-5.6 Luna, Claude Haiku 5.5, and Beam Free, and no prompts for other models.
 - [`synthetic`](https://synthetic.new/policies/privacy)
   - Crossfire does not apply a training-use refusal to Synthetic.

@@ -77,8 +77,7 @@ def training_models(provider_name: str) -> frozenset[str]:
 
 
 def training_violations(provider_name: str, wire_model_ids: Iterable[str]) -> list[str]:
-    """Returns an error message for each given wire ID in the gateway's list of models whose input data may be used for
-    training or model improvement.
+    """Returns an error message for each given wire ID that appears in the gateway's training or model-improvement list.
 
     Gateways with no published per-model policy return nothing: OpenRouter filters the offending providers out of
     the request itself, and Synthetic states that it never trains on prompts.

@@ -244,8 +244,8 @@ def extract_response_text(protocol: Protocol, data: dict[str, Any]) -> str:
 
     Refusal and truncation statuses take precedence over response text.
     If both statuses occur, refusal takes precedence.
-    The function raises :class:`RefusalResponseError` for refusal, :class:`TruncatedResponseError` for truncation, and
-    :class:`EmptyResponseError` when neither status occurs and the response contains no text.
+    The function raises :class:`RefusalResponseError` for refusal and :class:`TruncatedResponseError` for truncation.
+    It raises :class:`EmptyResponseError` when neither status occurs and the response contains no text.
     """
     text = ""
     if protocol == "chat":
