@@ -28,7 +28,8 @@
 - If the usage report includes cache reads or writes and the provider reports no cost, Crossfire lists the model in `unpriced_models` and omits the call's cost estimate.
 - Removed the dead `fatal_on_overflow` parameter.
 - The non-gating drift probe reports mismatches but exits with status 0.
-- Removed the dead `models_used_this_round` parameter. Round rotation already varies the model set each round.
+- Removed the dead `models_used_this_round` parameter.
+  Round rotation already varies the model set each round.
 
 ## [0.3.0] - 2026-09-24
 
