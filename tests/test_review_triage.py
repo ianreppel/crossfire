@@ -23,6 +23,34 @@ class TestStripSynthesisDecision:
     def test_leaves_text_without_a_decision(self):
         assert strip_synthesis_decision("# Title\ntext") == "# Title\ntext"
 
+    def test_keeps_code_fence_mentioning_the_marker_in_a_comment(self) -> None:
+        text = "```python\n# Handle crossfire_synthesis metadata.\ndef add(a, b):\n    return a + b\n```\nSummary."
+        assert strip_synthesis_decision(text) == text
+
+    def test_keeps_code_fence_mentioning_the_marker_as_an_identifier(self) -> None:
+        text = "```python\ncrossfire_synthesis_marker = 1\n```\nSummary."
+        assert strip_synthesis_decision(text) == text
+
+    def test_keeps_decision_shaped_json_inside_a_code_fence(self) -> None:
+        text = '```python\n{"crossfire_synthesis": {"notes": "example", "attributions": []}}\n```\nSummary.'
+        assert strip_synthesis_decision(text) == text
+
+    def test_keeps_prose_line_mentioning_the_marker(self) -> None:
+        text = "Notes mention the `crossfire_synthesis` key.\n# Title"
+        assert strip_synthesis_decision(text) == text
+
+    def test_keeps_json_fence_without_a_decision(self) -> None:
+        text = '```json\n{"result": "no decision here"}\n```\nSummary.'
+        assert strip_synthesis_decision(text) == text
+
+    def test_strips_pretty_printed_decision_fence(self) -> None:
+        text = '```json\n{\n  "crossfire_synthesis": {"notes": "n", "attributions": []}\n}\n```\n# Title\ntext'
+        assert strip_synthesis_decision(text) == "# Title\ntext"
+
+    def test_strips_unmarked_decision_fence(self) -> None:
+        text = '```\n{"crossfire_synthesis": {"notes": "n", "attributions": []}}\n```\n# Title\ntext'
+        assert strip_synthesis_decision(text) == "# Title\ntext"
+
 
 class TestParseReviewVerdict:
     def test_extracts_strengths_and_weaknesses(self):
@@ -258,6 +286,22 @@ class TestParseSynthesisDecision:
 
     def test_handles_malformed_json(self):
         text = '{"crossfire_synthesis": broken}\n## Output'
+        decisions, notes = parse_synthesis_decision(text)
+        assert decisions == []
+        assert notes == ""
+
+    def test_parses_json_metadata_fence(self) -> None:
+        text = (
+            '```json\n{"crossfire_synthesis": {"attributions": '
+            '[{"index": 1, "kept": ["body"], "discarded": []}], "notes": "kept"}}\n```\n'
+            "## Output"
+        )
+        decisions, notes = parse_synthesis_decision(text)
+        assert decisions == [CandidateDecision(index=1, kept=["body"], discarded=[])]
+        assert notes == "kept"
+
+    def test_ignores_decision_shaped_json_in_a_code_fence(self) -> None:
+        text = '```python\n{"crossfire_synthesis": {"notes": "example", "attributions": []}}\n```\n## Output'
         decisions, notes = parse_synthesis_decision(text)
         assert decisions == []
         assert notes == ""

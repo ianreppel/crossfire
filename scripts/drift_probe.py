@@ -1,12 +1,13 @@
-"""Catalogue-wide vendor drift probe (non-gating).
+"""Reports differences between Crossfire's OpenCode tables and vendor sources.
 
-Diffs the full policy and protocol tables against the live vendor pages and prints
-what moved. Run on a schedule so provider-side changes to models outside the bench
-surface as early warnings. Suggested cron line:
+The probe compares Crossfire's complete list of models whose input data OpenCode Zen may use for training or model
+improvement, OpenCode Go's training and retention tables, and Zen's documented protocol mapping with current vendor docs
+and model lists. Scheduled runs report mismatches between the vendor sources and Crossfire's tables. Suggested cron
+line:
 
-    0 9 * * * cd /path/to/crossfire && uv run python scripts/drift_probe.py
+0 9 * * * cd /path/to/crossfire && uv run python scripts/drift_probe.py
 
-Exit code is always 0. The gating bench check lives in ``tests/test_drift.py``.
+The probe always exits with status 0. Pytest fails on a mismatch when all required sources are reachable.
 """
 
 from __future__ import annotations
@@ -38,7 +39,9 @@ def main() -> int:
     candidates = vendor.endpoint_ids["opencode-go"] | set(test_drift._TRAINING_MODELS["opencode-go"])
     mapped = {name for name in rows if test_drift._wire_id_for(name, candidates) is not None}
     classified = {
-        name for name, (trains, retention) in rows.items() if trains == "Yes" or retention.strip("*").startswith("30")
+        name
+        for name, (trains, retention) in rows.items()
+        if trains == "Yes" or retention.strip("* ").lower() != "0 days"
     }
     training = {test_drift._wire_id_for(name, candidates) for name in classified if rows[name][0] == "Yes"}
     retaining = {test_drift._wire_id_for(name, candidates) for name in classified if rows[name][0] != "Yes"}

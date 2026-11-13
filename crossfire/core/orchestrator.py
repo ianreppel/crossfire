@@ -1025,7 +1025,14 @@ class Orchestrator:
         return self._pricing
 
     def _compute_cost(self, provider_name: str, wire_model_id: str, usage: Usage) -> float | None:
-        """Derives a cost from cached pricing when the provider does not report one (OpenCode Zen/Go)."""
+        """Derives a cost from the pricing table when the provider does not report one.
+
+        The pricing table has no cache-specific rates. If the usage report includes cache reads or writes and the
+        provider reports no cost figure, this function returns ``None``. The caller lists the model in
+        ``unpriced_models``.
+        """
+        if usage.cache_read_tokens or usage.cache_write_tokens:
+            return None
         pricing = self._load_pricing()
         entry = pricing.get(f"{provider_name}::{wire_model_id}") or pricing.get(wire_model_id)
         if entry is None:

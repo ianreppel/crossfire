@@ -67,11 +67,11 @@ _CREDITS_LAST_WORDS: dict[str, tuple[str, str]] = {
 
 
 class EmptyResponseError(Exception):
-    """Raised when the LLM returns an empty or missing response."""
+    """Raised when the provider returns no response text."""
 
 
 class TruncatedResponseError(RuntimeError):
-    """Raised when a response exhausted its output budget before emitting any content."""
+    """Raised when the model reaches its output-token limit before finishing its response."""
 
 
 class RefusalResponseError(RuntimeError):
@@ -240,10 +240,12 @@ def _empty_diagnostics(protocol: Protocol, data: dict[str, Any]) -> str:
 
 
 def extract_response_text(protocol: Protocol, data: dict[str, Any]) -> str:
-    """Extracts the assistant text from a provider response.
+    """Extracts assistant text after checking the provider's response status.
 
-    Raises :class:`TruncatedResponseError` when the model produced nothing because it ran out of output tokens
-    (retrying the identical call would only waste money), and :class:`EmptyResponseError` for any other empty result.
+    Refusal and truncation statuses take precedence over response text.
+    If both statuses occur, refusal takes precedence.
+    The function raises :class:`RefusalResponseError` for refusal, :class:`TruncatedResponseError` for truncation, and
+    :class:`EmptyResponseError` when neither status occurs and the response contains no text.
     """
     text = ""
     if protocol == "chat":
@@ -264,16 +266,16 @@ def extract_response_text(protocol: Protocol, data: dict[str, Any]) -> str:
                 if isinstance(block, dict) and block.get("type") in ("output_text", "text"):
                     text += block.get("text", "")
 
-    if text.strip():
-        return text
     if _is_refusal(protocol, data):
         raise RefusalResponseError(f"The model refused to answer ({_empty_diagnostics(protocol, data)}).")
     if _is_truncated(protocol, data):
         raise TruncatedResponseError(
-            "The model spent its whole output budget thinking and had nothing left to say. "
-            "Raise max_output_tokens or hand the job to someone less verbose."
+            "The model reached its output-token limit before finishing the response. "
+            "Increase the `max_output_tokens` setting or request a shorter response."
         )
-    raise EmptyResponseError(f"LLM returned empty content ({_empty_diagnostics(protocol, data)})")
+    if text.strip():
+        return text
+    raise EmptyResponseError(f"The model returned no response text ({_empty_diagnostics(protocol, data)}).")
 
 
 def extract_usage(protocol: Protocol, data: dict[str, Any]) -> Usage:

@@ -8,14 +8,14 @@ from pathlib import Path
 from typing import Any
 
 from crossfire.core import logging as log
-from crossfire.core.domain import Candidate, Review, RunParameters, SynthesisResult, strip_model_prefix
+from crossfire.core.domain import Candidate, Review, RunParameters, SynthesisResult, strip_provider_pin
 
 _UNSAFE_FILENAME_CHARS_REGEX = re.compile(r"[^A-Za-z0-9._-]")
 
 
 def _sanitize_model_name(model: str) -> str:
     """Converts a model ID to a filesystem-safe string."""
-    return _UNSAFE_FILENAME_CHARS_REGEX.sub("_", strip_model_prefix(model))
+    return _UNSAFE_FILENAME_CHARS_REGEX.sub("_", strip_provider_pin(model))
 
 
 class RunArchive:

@@ -12,17 +12,21 @@ from crossfire.core.config import load_configuration
 from crossfire.core.domain import Candidate, CrossfireConfiguration, Mode, ModelGroup, Review, RunParameters, Task
 from crossfire.core.orchestrator import Orchestrator
 from crossfire.core.privacy import (
-    gateway_retention_note,
+    gateway_data_policy_note,
     retention_notices,
     training_models,
     training_violations,
 )
 from tests.helpers import LogCapture
 
-_ZEN_RETENTION_NOTE = (
-    "opencode forwards OpenAI and Anthropic API requests under 30-day retention and Mistral "
-    "requests under Mistral's own retention policy, retains Beam Free prompts for 30 days, and documents "
-    "no per-model attribution for it"
+_ZEN_DATA_POLICY_NOTE = (
+    "OpenCode Zen forwards requests for OpenAI and Anthropic models to those providers, "
+    "which retain those requests for 30 days. "
+    "The Zen docs mention Mistral's retention policy but do not identify which models it applies to. "
+    "Zen retains Beam Free prompts and other inputs for 30 days without using them for training. "
+    "It retains Iceman Free data and uses it for model improvement, but the docs do not state the retention period. "
+    "It retains Inkling 2 Small Free data and may use it for model training, but the docs do not state the "
+    "retention period."
 )
 
 
@@ -53,11 +57,13 @@ def _with_provider_replacements(
 
 
 class TestTrainingModels:
-    def test_matches_the_documented_offenders_exactly(self):
+    def test_matches_the_documented_offenders_exactly(self) -> None:
         assert training_models("opencode") == frozenset(
             {
                 "big-pickle",
                 "flint-40b-free",
+                "iceman-free",
+                "inkling-2-small-free",
                 "mimo-v2.6-flash-free",
                 "nemotron-3-ultra-free",
                 "nemotron-3.5-lightning-free",
@@ -73,15 +79,26 @@ class TestTrainingModels:
         )
         assert training_models("synthetic") == frozenset()
 
-    def test_refuses_every_live_training_model(self):
+    def test_refuses_every_live_training_model(self) -> None:
         assert (
             training_violations(
                 "opencode",
-                ["flint-40b-free", "nemotron-3.5-lightning-free", "nemotron-3.5-super-vl-free"],
+                [
+                    "iceman-free",
+                    "inkling-2-small-free",
+                    "flint-40b-free",
+                    "nemotron-3.5-lightning-free",
+                    "nemotron-3.5-super-vl-free",
+                ],
             )
             != []
         )
         assert training_violations("opencode-go", ["iceman-contributor-free"]) != []
+
+    def test_explains_model_improvement_use_in_the_error(self) -> None:
+        violation = training_violations("opencode", ["iceman-free"])[0]
+        assert "may use input data" in violation
+        assert "training or model improvement" in violation
 
     def test_reports_only_the_offending_models(self):
         violations = training_violations("opencode-go", ["muse-spark-1.3-contributor", "kimi-k3"])
@@ -113,12 +130,21 @@ class TestRetentionNotices:
     def test_silent_for_zero_retention_gateways(self):
         assert retention_notices("synthetic", ["syn:large:text"]) == []
 
-    def test_gateway_note_covers_zen_api_traffic(self):
-        assert gateway_retention_note("opencode") == _ZEN_RETENTION_NOTE
-        assert gateway_retention_note("synthetic") == ""
+    def test_gateway_data_policy_note_covers_zen_api_traffic(self):
+        assert gateway_data_policy_note("opencode") == _ZEN_DATA_POLICY_NOTE
+        assert gateway_data_policy_note("synthetic") == ""
 
 
 class TestValidation:
+    @pytest.mark.parametrize("model", ["iceman-free", "inkling-2-small-free"])
+    def test_configured_zen_training_model_fails_validation(self, model: str) -> None:
+        configuration = _configuration(
+            "opencode",
+            generators=ModelGroup(names=(model,), context_window=200000),
+        )
+        errors = configuration.validate(1, 0)
+        assert any(model in error for error in errors)
+
     def test_training_model_in_the_bench_fails_the_run(self):
         configuration = _configuration(
             "opencode-go",
@@ -127,16 +153,16 @@ class TestValidation:
         errors = configuration.validate(1, 0)
         assert any("muse-spark-1.3-contributor" in error for error in errors)
 
-    def test_allow_training_models_opts_back_in(self):
+    def test_allow_training_models_opts_back_in(self) -> None:
         configuration = _configuration(
             "opencode-go",
             generators=ModelGroup(names=("muse-spark-1.3-contributor",), context_window=200000),
         )
         permitted = _with_provider_replacements(configuration, **{"opencode-go": {"allow_training_models": True}})
-        assert not any("trains on prompts" in error for error in permitted.validate(1, 0))
+        assert not any("may use input data" in error for error in permitted.validate(1, 0))
 
-    def test_clean_bench_raises_no_privacy_errors(self):
-        assert not any("trains on prompts" in error for error in _configuration("opencode-go").validate(1, 0))
+    def test_clean_configuration_raises_no_privacy_errors(self) -> None:
+        assert not any("may use input data" in error for error in _configuration("opencode-go").validate(1, 0))
 
 
 class TestDataPolicyNotices:
@@ -149,7 +175,7 @@ class TestDataPolicyNotices:
         assert mapped.data_policy_notices() == ["opencode-go retains prompts sent to 'grok-4.7' for 30 days"]
 
     def test_zen_runs_report_the_api_retention_caveat(self):
-        assert _configuration("opencode").data_policy_notices() == [_ZEN_RETENTION_NOTE]
+        assert _configuration("opencode").data_policy_notices() == [_ZEN_DATA_POLICY_NOTE]
 
     def test_synthetic_runs_report_nothing(self):
         assert _configuration("synthetic").data_policy_notices() == []

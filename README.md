@@ -149,7 +149,11 @@ Cross-group overlap is allowed: a model may both generate and review in the same
 
 Model names in `[models.*]` are neutral slugs.
 `[providers.<name>.model_ids]` maps them to each gateway's wire IDs.
-Prefix a model with a gateway, such as `openrouter:perplexity/sonar-pro`, to pin it to that provider.
+A model ID has a provider pin when it starts with a configured provider name followed by a colon.
+The pin restricts the model to runs that use the named gateway.
+Prefixes such as `hf:` and `syn:` remain part of the model ID unless a provider with that name is configured.
+OpenRouter's trailing `:free` suffix stays in the model ID and is not treated as a provider pin.
+The wire ID is the model ID Crossfire sends to the selected gateway after removing the provider pin and resolving aliases.
 Synthetic's `syn:*` aliases keep the call stable when its routed model changes.
 
 ## Configuration
@@ -162,20 +166,35 @@ See [`crossfire.toml`](crossfire.toml) for the full configuration with all 5 mod
 OpenRouter and Synthetic use OpenAI-compatible chat. OpenCode Zen and Go choose chat, messages, or responses by model family.
 
 ### Data policy
-Crossfire asks the gateway not to train on your prompts, and where the gateway allows it, not to retain them.
-How much of that it can enforce is the gateway's decision, and the four differ:
+Crossfire applies gateway-specific data-use checks and logs known retention terms.
+The controls differ by gateway:
+- [`openrouter`](https://openrouter.ai/docs/guides/routing/provider-selection)
+  - Every request carries `provider.data_collection: "deny"` and `provider.zdr: true`.
+  - The two request fields constrain provider routing.
+  - OpenRouter stores no prompts unless users opt in to Input & Output Logging or to product-improvement use of their inputs.
+- [`opencode`](https://opencode.ai/docs/zen/#privacy)
+  - By default, Crossfire refuses runs that use a model whose input data OpenCode Zen may use for training or model improvement.
+  - OpenCode Zen offers no per-request controls over retention or data use for training or model improvement.
+- [`opencode-go`](https://opencode.ai/docs/go/#privacy)
+  - By default, Crossfire refuses runs that use a model in Crossfire's OpenCode Go training table.
+  - OpenCode Go offers no per-request controls over retention or training.
+  - OpenCode Go retains prompts for 30 days for Grok 4.7, GPT-6 Luna, GPT-5.6 Luna, Claude Haiku 5.5, and Beam Free, and no prompts for other models.
+- [`synthetic`](https://synthetic.new/policies/privacy)
+  - Crossfire does not apply a training-use refusal to Synthetic.
+  - Synthetic states that it never trains on prompts and deletes API prompt data once the call completes.
 
-| Gateway | Enforcement | Limit |
-|:--------|:-------------|:------|
-| `openrouter` | Every request carries `provider.data_collection: "deny"` and `provider.zdr: true` | The filters constrain provider routing. OpenRouter's own prompt storage stays empty unless you opt in to Input & Output Logging or to product-improvement use of your inputs, both off by default. |
-| `opencode` | The run is refused when a bench model is one Zen documents as training on prompts, which it lists as exceptions to its zero-retention pledge | Zen takes no per-request switch, retains requests it forwards to the OpenAI and Anthropic APIs for 30 days and to the Mistral API per Mistral's own retention policy, and retains Beam Free prompts for 30 days. |
-| `opencode-go` | The same refusal, against Go's published per-model table | No per-request switch. Grok 4.7, GPT-6 Luna, GPT-5.6 Luna, Claude Haiku 5.5, and Beam Free retain prompts for 30 days; every other Go model is zero-retention. |
-| `synthetic` | Nothing to enforce | Synthetic states that it never trains on prompts and deletes API prompt data once the call completes. |
-
-The OpenCode gateways have no switch to waive, so Crossfire logs the retention that applies to the models in the bench when a run starts.
-The sources are [OpenCode Zen](https://opencode.ai/docs/zen/#privacy), [OpenCode Go](https://opencode.ai/docs/go/#privacy), [OpenRouter provider routing](https://openrouter.ai/docs/guides/routing/provider-selection), and [Synthetic's privacy policy](https://synthetic.new/policies/privacy).
-
-`allow_training_models = true` under `[providers.<name>]` overrides the refusal of a training model.
+The [OpenCode Zen privacy docs](https://opencode.ai/docs/zen/#privacy) identify models whose input data OpenCode Zen may use for training or model improvement.
+Crossfire's `training_models` function returns the wire IDs for those models.
+Crossfire's training and model-improvement checks do not refuse Beam Free on either OpenCode gateway.
+The [OpenCode Zen privacy docs](https://opencode.ai/docs/zen/#privacy) list these retention and training terms for free models:
+- Zen does not use Beam Free prompts or other inputs for training, but retains the prompts and other inputs for 30 days.
+- Zen retains Iceman Free data and uses it to improve that model, but the docs do not state the retention period.
+- Zen retains Inkling 2 Small Free data and may use it for model training, but the docs do not state the retention period.
+The [OpenCode Zen privacy docs](https://opencode.ai/docs/zen/#privacy) say Zen forwards requests for OpenAI and Anthropic models to those providers, which retain those requests for 30 days.
+The [OpenCode Zen privacy docs](https://opencode.ai/docs/zen/#privacy) mention Mistral's retention policy but do not identify which models it applies to.
+At run start, Crossfire logs a data-use and retention note for the active gateway when one exists.
+It also logs per-model notices for configured models listed in the active gateway's retention table.
+Despite its name, `allow_training_models = true` under `[providers.<name>]` overrides refusals for models whose input data may be used for training or model improvement.
 `require_zdr = false` and `deny_data_collection = false` under `[providers.openrouter]` relax the routing filters.
 Both filters fail a request rather than route around the constraint, so a model with no qualifying endpoint returns an error instead of quietly losing its ZDR guarantee.
 The request-level `zdr` flag ORs with your OpenRouter account-wide and guardrail settings, so it can enforce ZDR but never relax it.
@@ -259,6 +278,8 @@ uv run crossfire run ... -v 2>&1 | jq 'select(.event == "synthesis_decision")'
 
 Every response's token usage, including caching, is captured.
 OpenRouter reports cost directly, whereas OpenCode Zen/Go costs are derived from `pricing.json`.
+If the usage report includes cache reads or writes and the provider reports no cost, Crossfire lists the model in `unpriced_models` and omits the call's cost estimate.
+`pricing.json` stores only prompt and completion rates per token.
 The same holds for Synthetic's `hf:` open models; its `syn:` frontier aliases have no public price, so those roles surface under `unpriced_models` instead of contributing to the total.
 A `cost_summary` event is emitted at the end of each run with per-model and aggregate totals.
 
@@ -300,6 +321,14 @@ uv run pre-commit run --all-files && uv run pytest --cov
 ```
 
 The pre-commit hooks automatically run `docformatter`, `ruff --fix`, `ruff format`, and `mypy` on every commit to ensure consistent code quality.
+
+Protocol adapter tests use `httpx.MockTransport` for `chat`, `messages`, and `responses` requests, so they make no live requests to provider endpoints.
+Network drift tests compare:
+- Crossfire's complete list of models whose input data OpenCode Zen may use for training or model improvement with the OpenCode Zen privacy docs.
+- Crossfire's complete training and retention tables for OpenCode Go with the OpenCode Go privacy docs.
+- Crossfire's protocol mapping with the protocol documented for each OpenCode Zen endpoint.
+A module-scoped fixture skips all network drift tests if any required documentation page or model-list endpoint for OpenCode Zen or OpenCode Go is unreachable.
+An offline test checks that configured model IDs resolve to wire IDs for each gateway.
 
 ### Project structure
 

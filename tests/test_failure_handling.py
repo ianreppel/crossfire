@@ -324,14 +324,16 @@ class TestConfigurationValidation:
         errors = configuration.validate(num_generators=1, num_reviewers_per_candidate=2)
         assert any("base_url" in error for error in errors)
 
-    def test_unknown_provider_prefix_fails(self):
+    def test_unconfigured_prefix_remains_in_model_id(self) -> None:
+        # Only configured provider names before the first colon pin a model to a gateway.
+        # An unconfigured prefix remains in the model ID, so validation accepts that ID.
         configuration = CrossfireConfiguration(
             generators=ModelGroup(names=("opencodego:glm-5.3",), context_window=16000),
             reviewers=ModelGroup(names=("rev-a", "rev-b"), context_window=16000),
             synthesizer=ModelGroup(names=("synth-a",), context_window=32000),
         )
         errors = configuration.validate(num_generators=1, num_reviewers_per_candidate=2)
-        assert any("opencodego" in error for error in errors)
+        assert not any("prefix" in error for error in errors)
 
     def test_configured_provider_prefix_passes(self):
         configuration = CrossfireConfiguration(

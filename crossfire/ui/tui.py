@@ -19,7 +19,7 @@ from rich.progress import BarColumn, Progress, TextColumn, TimeElapsedColumn
 from rich.table import Table
 from rich.text import Text
 
-from crossfire.core.domain import CostEstimate, Phase, RunParameters, strip_model_prefix
+from crossfire.core.domain import CostEstimate, Phase, RunParameters, strip_provider_pin
 
 _PHASE_LABELS: dict[Phase, tuple[str, str]] = {
     Phase.ENRICHMENT: ("Enriching", "blue"),
@@ -34,8 +34,8 @@ _SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
 
 def _shorten_model(model: str) -> str:
-    """Strips any ``provider:`` prefix and ``vendor/`` namespace, keeping only the model slug."""
-    return strip_model_prefix(model).split("/")[-1]
+    """Returns the model slug after removing a provider pin and namespace."""
+    return strip_provider_pin(model).split("/")[-1]
 
 
 def _format_elapsed(seconds: float) -> str:

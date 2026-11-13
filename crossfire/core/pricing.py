@@ -10,7 +10,14 @@ from typing import Any
 
 import httpx
 
-from crossfire.core.domain import CostEstimate, CrossfireConfiguration, ModelGroup, RunParameters, strip_model_prefix
+from crossfire.core.domain import (
+    CostEstimate,
+    CrossfireConfiguration,
+    ModelGroup,
+    RunParameters,
+    split_provider_pin,
+    strip_provider_pin,
+)
 from crossfire.core.reviewers import assign_reviewers
 from crossfire.core.tokens import estimate_tokens
 
@@ -143,14 +150,16 @@ def _pricing_keys_for(
     provider_names = {provider.name for provider in configuration.providers}
 
     def keys_for(name: str) -> tuple[str, ...]:
-        prefix, separator, rest = name.partition(":")
-        if separator and prefix in provider_names:
-            provider_name, neutral = prefix, rest
+        pin, neutral = split_provider_pin(name, provider_names)
+        if pin is not None:
+            provider_name = pin
         else:
             provider_name, neutral = configuration.provider, name
         provider = next((p for p in configuration.providers if p.name == provider_name), None)
-        wire_model_id = provider.resolve_wire_model_id(neutral) if provider else strip_model_prefix(name)
-        return (f"{provider_name}::{wire_model_id}", wire_model_id, strip_model_prefix(name))
+        wire_model_id = (
+            provider.resolve_wire_model_id(neutral) if provider else strip_provider_pin(name, provider_names)
+        )
+        return (f"{provider_name}::{wire_model_id}", wire_model_id, strip_provider_pin(name, provider_names))
 
     return keys_for
 

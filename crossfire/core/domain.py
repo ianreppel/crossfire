@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import enum
 from collections import defaultdict
+from collections.abc import Collection
 from dataclasses import dataclass, field, replace
 from typing import Any
 
@@ -43,33 +44,40 @@ class Mode(enum.StrEnum):
 _KNOWN_PROVIDER_PREFIXES: tuple[str, ...] = ("opencode-go", "opencode", "openrouter", "synthetic")
 
 
-def strip_model_prefix(model: str) -> str:
-    """Strips a leading ``<provider>:`` prefix (e.g. ``opencode:glm-5.3``) when one is present."""
-    prefix, separator, rest = model.partition(":")
-    if separator and prefix in _KNOWN_PROVIDER_PREFIXES:
-        return rest
-    return model
+def split_provider_pin(model: str, provider_names: Collection[str]) -> tuple[str | None, str]:
+    """Returns a tuple of the matching provider name and remaining model ID, or ``(None, model)`` if no pin matches."""
+    provider_name, separator, model_id = model.partition(":")
+    if separator and provider_name in provider_names:
+        return provider_name, model_id
+    return None, model
+
+
+def strip_provider_pin(model: str, provider_names: Collection[str] = _KNOWN_PROVIDER_PREFIXES) -> str:
+    """Returns the model ID without a configured provider pin, or unchanged if no pin matches.
+
+    Use this when the caller does not need the pinned provider name.
+    """
+    _, model_id = split_provider_pin(model, provider_names)
+    return model_id
 
 
 def _model_targets_provider(model: str, provider_name: str, provider_names: set[str]) -> bool:
-    """A model pinned with a ``provider:`` prefix runs only on that gateway; an unprefixed model runs anywhere."""
-    prefix, separator, _ = model.partition(":")
-    if not separator or prefix not in provider_names:
-        return True
-    return prefix == provider_name
+    """Returns True when *model* is unpinned or pinned to *provider_name*."""
+    pin, _ = split_provider_pin(model, provider_names)
+    return pin is None or pin == provider_name
 
 
 @dataclass(frozen=True)
 class ProviderConfiguration:
     """Connection details, model alias table, and data policy for a single inference gateway.
 
-    ``model_ids`` maps a neutral model slug (one that works on every gateway) to the provider's wire model ID.
+    ``model_ids`` maps a neutral model slug (one that works on every gateway) to the gateway's wire model ID.
     Slugs absent from the table are passed through unchanged, which is what makes OpenRouter lists work as-is.
 
     The three privacy fields default to the safe setting. ``deny_data_collection`` and ``require_zdr`` become
-    OpenRouter's per-request routing filters, which are the only such knobs any gateway exposes; on the OpenCode
-    gateways they record intent and change nothing on the wire, where :mod:`crossfire.core.privacy` enforces the
-    policy instead by refusing models that train. ``allow_training_models`` is the opt-out from that refusal.
+    OpenRouter's per-request routing filters, which are the only such controls any gateway exposes. On OpenCode,
+    these fields record intent but do not change the request. :mod:`crossfire.core.privacy` refuses models whose input
+    data may be used for training or model improvement by default. ``allow_training_models`` overrides that refusal.
     """
 
     name: str
@@ -82,18 +90,16 @@ class ProviderConfiguration:
     allow_training_models: bool = False
 
     def resolve_wire_model_id(self, model: str) -> str:
-        """Returns the provider's wire model ID for a neutral *model* slug.
+        """Returns this gateway's wire ID for a configured model ID.
 
-        Handles the alias table, this provider's own ``<name>:`` prefix, and the built-in prefixes, so a model
-        pinned to this gateway resolves to the right wire ID.
+        This gateway's provider pin is removed before alias lookup, so a pinned model ID and its unpinned form resolve
+        to the same wire ID. Pricing uses the same resolver.
         """
+        _, model_id = split_provider_pin(model, (self.name,))
         for neutral, wire in self.model_ids:
-            if neutral == model:
+            if neutral == model_id:
                 return wire
-        own_prefix = f"{self.name}:"
-        if model.startswith(own_prefix):
-            return model[len(own_prefix) :]
-        return strip_model_prefix(model)
+        return model_id
 
 
 DEFAULT_PROVIDER_CONFIGURATIONS: tuple[ProviderConfiguration, ...] = (
@@ -356,19 +362,19 @@ class CrossfireConfiguration:
         return resolved.for_active_provider()
 
     def data_policy_notices(self) -> list[str]:
-        """Returns what the active gateway does with prompts on the models this run would use.
+        """Returns data-use and retention notices for the active gateway and models in this run.
 
-        These are notices rather than errors: no gateway lets a request waive its own retention, so a run against
-        a retaining model is still a valid run. Training is a different matter, and :meth:`validate` refuses it.
+        These notices do not block a run when a model retains prompts. By default, :meth:`validate` refuses models
+        whose input data the gateway may use for training or model improvement.
         """
         provider = self.active_provider()
         notices: list[str] = []
         for group in (self.enricher, self.generators, self.reviewers, self.synthesizer):
             wire_model_ids = [provider.resolve_wire_model_id(model) for model in group.names]
             notices.extend(privacy.retention_notices(provider.name, wire_model_ids))
-        gateway_note = privacy.gateway_retention_note(provider.name)
-        if gateway_note:
-            notices.append(gateway_note)
+        gateway_data_policy_note = privacy.gateway_data_policy_note(provider.name)
+        if gateway_data_policy_note:
+            notices.append(gateway_data_policy_note)
         return sorted(set(notices))
 
     def validate(
@@ -407,6 +413,9 @@ class CrossfireConfiguration:
                 "Add more models to [models.reviewers] in crossfire.toml"
             )
 
+        # A configured provider name before the first colon restricts the model to that gateway.
+        # Other prefixes stay in the ID.
+        # An unconfigured prefix passes validation and may reach the gateway as an unknown model.
         for label, group in [
             ("enricher", self.enricher),
             ("generators", self.generators),
@@ -419,14 +428,6 @@ class CrossfireConfiguration:
                     f"{label}: {violation}"
                     for violation in privacy.training_violations(active_provider.name, wire_model_ids)
                 )
-
-            for model in group.names:
-                prefix, separator, _ = model.partition(":")
-                if separator and prefix and prefix not in provider_names:
-                    errors.append(
-                        f"{label}: '{model}' carries unknown provider prefix '{prefix}'. "
-                        f"Pin with one of: {', '.join(provider_names)}."
-                    )
 
             if group.context_window <= 0:
                 errors.append(f"{label}.context_window must be positive")

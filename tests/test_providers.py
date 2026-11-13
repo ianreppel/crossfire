@@ -3,17 +3,20 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import replace
+from typing import Any
 
 import httpx
 import pytest
 
 import crossfire.core.providers as providers_module
-from crossfire.core.domain import ProviderConfiguration, Role, strip_model_prefix
+from crossfire.core.domain import ProviderConfiguration, Role, strip_provider_pin
 from crossfire.core.providers import (
     AuthenticationError,
     EmptyResponseError,
     InsufficientCreditsError,
+    Protocol,
     RefusalResponseError,
     TruncatedResponseError,
     UnsupportedProtocolError,
@@ -43,16 +46,21 @@ _SYNTHETIC = ProviderConfiguration(
 )
 
 
-class TestStripModelPrefix:
-    def test_strips_known_provider_prefix(self):
-        assert strip_model_prefix("opencode:glm-5.3") == "glm-5.3"
-        assert strip_model_prefix("openrouter:anthropic/claude-sonnet-4") == "anthropic/claude-sonnet-4"
+class TestStripProviderPin:
+    def test_strips_known_provider_pin(self) -> None:
+        assert strip_provider_pin("opencode:glm-5.3") == "glm-5.3"
+        assert strip_provider_pin("openrouter:anthropic/claude-sonnet-4") == "anthropic/claude-sonnet-4"
 
-    def test_leaves_neutral_slug_untouched(self):
-        assert strip_model_prefix("anthropic/claude-sonnet-4") == "anthropic/claude-sonnet-4"
+    def test_leaves_neutral_slug_untouched(self) -> None:
+        assert strip_provider_pin("anthropic/claude-sonnet-4") == "anthropic/claude-sonnet-4"
 
-    def test_leaves_colon_in_wire_id_untouched(self):
-        assert strip_model_prefix("anthropic/claude-sonnet-4:batch") == "anthropic/claude-sonnet-4:batch"
+    def test_leaves_colon_in_wire_id_untouched(self) -> None:
+        assert strip_provider_pin("anthropic/claude-sonnet-4:batch") == "anthropic/claude-sonnet-4:batch"
+        assert strip_provider_pin("syn:large:text") == "syn:large:text"
+        assert strip_provider_pin("hf:zai-org/GLM-5.3-Flash") == "hf:zai-org/GLM-5.3-Flash"
+
+    def test_strips_configured_provider_pin(self) -> None:
+        assert strip_provider_pin("custom:vendor/model", {"custom"}) == "vendor/model"
 
 
 class TestResolveProtocol:
@@ -84,6 +92,19 @@ class TestResolveProtocol:
     def test_synthetic_is_always_chat(self):
         assert resolve_protocol(_SYNTHETIC, "syn:large:text") == "chat"
         assert resolve_protocol(_SYNTHETIC, "hf:zai-org/GLM-5.3-Flash") == "chat"
+        assert _SYNTHETIC.resolve_wire_model_id("syn:large:text") == "syn:large:text"
+        assert _SYNTHETIC.resolve_wire_model_id("hf:zai-org/GLM-5.3-Flash") == "hf:zai-org/GLM-5.3-Flash"
+
+    def test_pinned_alias_keeps_its_resolved_protocol(self) -> None:
+        provider = ProviderConfiguration(
+            name="opencode",
+            base_url="https://opencode.ai/zen/v1",
+            api_key_env="OPENCODE_API_KEY",
+            model_ids=(("openai/gpt-6-sol", "gpt-6-sol"),),
+        )
+        wire_model_id = provider.resolve_wire_model_id("opencode:openai/gpt-6-sol")
+        assert wire_model_id == "gpt-6-sol"
+        assert resolve_protocol(provider, wire_model_id) == "responses"
 
     def test_gemini_raises(self):
         with pytest.raises(UnsupportedProtocolError):
@@ -271,6 +292,43 @@ class TestExtractResponseText:
         with pytest.raises(EmptyResponseError, match="stop_reason"):
             extract_response_text("messages", {"stop_reason": "end_turn", "content": []})
 
+    @pytest.mark.parametrize(
+        ("protocol", "data"),
+        [
+            ("chat", {"choices": [{"finish_reason": "length", "message": {"content": "half a candidate"}}]}),
+            ("messages", {"stop_reason": "max_tokens", "content": [{"type": "text", "text": "half a candidate"}]}),
+            (
+                "responses",
+                {
+                    "status": "incomplete",
+                    "output": [{"type": "message", "content": [{"type": "output_text", "text": "half a candidate"}]}],
+                },
+            ),
+        ],
+    )
+    def test_truncated_partial_text_still_raises(self, protocol: Protocol, data: dict[str, Any]) -> None:
+        with pytest.raises(TruncatedResponseError):
+            extract_response_text(protocol, data)
+
+    @pytest.mark.parametrize(
+        ("protocol", "data"),
+        [
+            ("chat", {"choices": [{"finish_reason": "content_filter", "message": {"content": "filtered"}}]}),
+            ("messages", {"stop_reason": "refusal", "content": [{"type": "text", "text": "I cannot"}]}),
+            (
+                "responses",
+                {
+                    "status": "incomplete",
+                    "incomplete_details": {"reason": "content_filter"},
+                    "output": [{"type": "message", "content": [{"type": "output_text", "text": "filtered"}]}],
+                },
+            ),
+        ],
+    )
+    def test_refusal_with_text_still_raises(self, protocol: Protocol, data: dict[str, Any]) -> None:
+        with pytest.raises(RefusalResponseError):
+            extract_response_text(protocol, data)
+
 
 class TestExtractUsage:
     def test_chat_with_cost_and_cache(self):
@@ -352,6 +410,75 @@ class TestCallModel:
         assert result == {"choices": [{"message": {"content": "ok"}}]}
         assert captured["url"] == "https://opencode.ai/zen/v1/chat/completions"
         assert captured["auth"] == "Bearer secret"
+
+    @pytest.mark.parametrize(
+        ("protocol", "wire_model_id", "endpoint", "response_data"),
+        [
+            (
+                "chat",
+                "glm-5.3",
+                "chat/completions",
+                {"choices": [{"finish_reason": "stop", "message": {"content": "round-trip"}}]},
+            ),
+            (
+                "messages",
+                "claude-opus-5-5",
+                "messages",
+                {"stop_reason": "end_turn", "content": [{"type": "text", "text": "round-trip"}]},
+            ),
+            (
+                "responses",
+                "gpt-6-luna",
+                "responses",
+                {
+                    "status": "completed",
+                    "output": [{"type": "message", "content": [{"type": "output_text", "text": "round-trip"}]}],
+                },
+            ),
+        ],
+    )
+    def test_http_round_trip_for_each_protocol(
+        self,
+        protocol: Protocol,
+        wire_model_id: str,
+        endpoint: str,
+        response_data: dict[str, Any],
+    ) -> None:
+        captured: dict[str, Any] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured["url"] = str(request.url)
+            captured["headers"] = request.headers
+            captured["payload"] = json.loads(request.content)
+            return httpx.Response(200, json=response_data, request=request)
+
+        async def scenario() -> dict[str, Any]:
+            async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+                return await call_model(
+                    provider=_OPENCODE,
+                    protocol=protocol,
+                    wire_model_id=wire_model_id,
+                    system_prompt="system",
+                    user_prompt="user",
+                    api_key="test-key",
+                    max_tokens=64,
+                    temperature=0.5,
+                    semaphore=asyncio.Semaphore(1),
+                    client=client,
+                    session_id="session-1",
+                    reasoning_effort="low",
+                )
+
+        result = asyncio.run(scenario())
+        headers: httpx.Headers = captured["headers"]
+        payload: dict[str, Any] = captured["payload"]
+        assert captured["url"] == f"https://opencode.ai/zen/v1/{endpoint}"
+        assert payload["model"] == wire_model_id
+        assert headers["x-opencode-session"] == "session-1"
+        assert extract_response_text(protocol, result) == "round-trip"
+        auth_header = "x-api-key" if protocol == "messages" else "authorization"
+        expected_auth = "test-key" if protocol == "messages" else "Bearer test-key"
+        assert headers[auth_header] == expected_auth
 
 
 class TestCallWithRetry:

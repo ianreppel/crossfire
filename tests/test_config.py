@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from crossfire.core.config import get_api_key, load_configuration
-from crossfire.core.domain import ModelGroup, Role
+from crossfire.core.domain import ModelGroup, ProviderConfiguration, Role
 
 
 class TestConfigurationLoading:
@@ -108,6 +108,38 @@ api_key_env = "CUSTOM_KEY"
 
         on_openrouter = replace(mixed, provider="openrouter").resolve_for_mode("code")
         assert on_openrouter.generators.names == ("openrouter:perplexity/sonar-pro", "z-ai/glm-5.3")
+
+    def test_pinned_neutral_slug_resolves_through_the_alias_table(self) -> None:
+        opencode = ProviderConfiguration(
+            name="opencode",
+            base_url="https://opencode.ai/zen/v1",
+            api_key_env="OPENCODE_API_KEY",
+            model_ids=(("openai/gpt-6-sol", "gpt-6-sol"),),
+        )
+        assert opencode.resolve_wire_model_id("openai/gpt-6-sol") == "gpt-6-sol"
+        assert opencode.resolve_wire_model_id("opencode:openai/gpt-6-sol") == "gpt-6-sol"
+
+    def test_pinned_native_id_passes_through(self) -> None:
+        openrouter = ProviderConfiguration(
+            name="openrouter",
+            base_url="https://openrouter.ai/api/v1",
+            api_key_env="OPENROUTER_API_KEY",
+        )
+        assert openrouter.resolve_wire_model_id("openrouter:deepseek/deepseek-r1:free") == "deepseek/deepseek-r1:free"
+
+    def test_native_colon_ids_validate(self) -> None:
+        configuration = load_configuration(configuration_path=Path("/nonexistent/crossfire.toml"))
+        native = replace(
+            configuration,
+            provider="synthetic",
+            generators=ModelGroup(
+                names=("syn:large:text", "hf:zai-org/GLM-5.3-Flash", "deepseek/deepseek-r1:free"),
+                context_window=200000,
+            ),
+            reviewers=ModelGroup(names=("qwen/qwen3.8-flash",), context_window=200000),
+            synthesizer=ModelGroup(names=("syn:large:text",), context_window=200000),
+        )
+        assert native.validate(num_generators=1, num_reviewers_per_candidate=1) == []
 
     def test_per_model_overrides_follow_their_model_when_scoped(self):
         configuration = load_configuration(configuration_path=Path("/nonexistent/crossfire.toml"))

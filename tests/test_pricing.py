@@ -298,6 +298,47 @@ class TestComputeCostFromPricing:
         orchestrator._pricing = {}
         assert orchestrator._compute_cost("opencode", "missing", Usage(input_tokens=1, output_tokens=1)) is None
 
+    @pytest.mark.parametrize(
+        ("cache_read_tokens", "cache_write_tokens"),
+        [(100, 0), (0, 20), (100, 20)],
+    )
+    def test_cache_usage_without_cache_rates_is_unpriced(self, cache_read_tokens: int, cache_write_tokens: int) -> None:
+        configuration = CrossfireConfiguration(
+            generators=ModelGroup(names=("glm-5.3",), context_window=16000),
+            search=SearchConfiguration(enabled=False),
+            limits=LimitsConfiguration(),
+        )
+        parameters = RunParameters(mode=Mode.CODE, task=Task(instruction="x"), dry_run=True)
+        orchestrator = Orchestrator(configuration, parameters)
+        orchestrator._pricing = {"opencode::glm-5.3": (1e-6, 2e-6)}
+        cost = orchestrator._compute_cost(
+            "opencode",
+            "glm-5.3",
+            Usage(
+                input_tokens=100,
+                output_tokens=50,
+                cache_read_tokens=cache_read_tokens,
+                cache_write_tokens=cache_write_tokens,
+            ),
+        )
+        assert cost is None
+
+
+class TestPricingKeysForPinnedAlias:
+    def test_pricing_resolves_pinned_alias_to_the_wire_model_id(self) -> None:
+        provider = ProviderConfiguration(
+            name="opencode",
+            base_url="https://opencode.ai/zen/v1",
+            api_key_env="OPENCODE_API_KEY",
+            model_ids=(("openai/gpt-6-sol", "gpt-6-sol"),),
+        )
+        configuration = CrossfireConfiguration(provider="opencode", providers=(provider,))
+        assert _pricing_keys_for(configuration)("opencode:openai/gpt-6-sol") == (
+            "opencode::gpt-6-sol",
+            "gpt-6-sol",
+            "openai/gpt-6-sol",
+        )
+
 
 class TestParseLengthHint:
     def test_word_count(self):
