@@ -9,8 +9,8 @@
 
 ### Fixed
 - Refreshed the policy tables from the vendor pages: Zen's training list matches its documented exceptions again (fixing a Nemotron wire ID that could never match), and Go's lists gain Iceman Contributor Free, Claude Haiku 5.5, and Beam Free while dropping the departed Grok 4.6.
-- By default, Crossfire refuses runs that use Iceman Free because OpenCode Zen uses Iceman Free input data for model improvement, as stated in the [OpenCode Zen privacy docs](https://opencode.ai/docs/zen/#privacy).
-- By default, Crossfire refuses runs that use Inkling 2 Small Free because OpenCode Zen may use Inkling 2 Small Free input data for model training, as stated in the [OpenCode Zen privacy docs](https://opencode.ai/docs/zen/#privacy).
+- When OpenCode Zen is active, Crossfire refuses runs that use Iceman Free because Zen uses Iceman Free input data for model improvement, as stated in the [OpenCode Zen privacy docs](https://opencode.ai/docs/zen/#privacy).
+- When OpenCode Zen is active, Crossfire refuses runs that use Inkling 2 Small Free because Zen may use Inkling 2 Small Free input data for model training, as stated in the [OpenCode Zen privacy docs](https://opencode.ai/docs/zen/#privacy).
 - OpenCode Zen policy drift tests compare Crossfire's complete list of models whose input data OpenCode Zen may use for training or model improvement with the [OpenCode Zen privacy docs](https://opencode.ai/docs/zen/#privacy).
 - OpenCode Go policy drift tests compare Crossfire's complete training and retention tables with the [OpenCode Go privacy docs](https://opencode.ai/docs/go/#privacy).
 - OpenCode Zen protocol drift tests compare Crossfire's protocol mapping with the protocol documented for each endpoint in the [OpenCode Zen docs](https://opencode.ai/docs/zen/).
@@ -25,7 +25,7 @@
 - Synthesis cleanup removes standalone JSON objects, each on its own line, with a top-level `crossfire_synthesis` key outside code fences.
   It also removes entire unlabelled or `json`-labelled fenced blocks that contain an object with that top-level key.
 - Synthesis cleanup preserves other code fences and text outside removed blocks, including prose that mentions `crossfire_synthesis`.
-- If the usage report includes cache reads or writes and the provider reports no cost, Crossfire lists the model in `unpriced_models` and omits the call's cost estimate.
+- If the usage report includes cache reads or writes and the provider does not report a cost, Crossfire lists the model in `unpriced_models` and omits the call's cost estimate.
 - Removed the dead `fatal_on_overflow` parameter.
 - The non-gating drift probe reports mismatches but exits with status 0.
 - Removed the dead `models_used_this_round` parameter.

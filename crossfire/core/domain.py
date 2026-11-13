@@ -74,7 +74,7 @@ class ProviderConfiguration:
     ``model_ids`` maps a neutral model slug (one that works on every gateway) to the gateway's wire model ID.
     Slugs absent from the table are passed through unchanged, which is what makes OpenRouter lists work as-is.
 
-    The three privacy fields default to the safe setting. ``deny_data_collection`` and ``require_zdr`` become
+    The three policy fields default to the safe setting. ``deny_data_collection`` and ``require_zdr`` become
     OpenRouter's per-request routing filters, which are the only such controls any gateway exposes. On OpenCode,
     these fields record intent but do not change the request. :mod:`crossfire.core.privacy` refuses models whose input
     data may be used for training or model improvement by default. ``allow_training_models`` overrides that refusal.

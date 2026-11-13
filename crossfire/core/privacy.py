@@ -59,25 +59,27 @@ _RETENTION_MODELS: dict[str, dict[str, str]] = {
 # Gateway-wide data-use and retention caveats that the vendor states without listing them in a per-model table.
 _GATEWAY_DATA_POLICY_NOTES: dict[str, str] = {
     "opencode": (
-        "OpenCode Zen forwards requests for OpenAI and Anthropic models to those providers, "
-        "which retain those requests for 30 days. "
-        "The Zen docs mention Mistral's retention policy but do not identify which models it applies to. "
-        "Zen retains Beam Free prompts and other inputs for 30 days without using them for training. "
-        "It retains Iceman Free data and uses it for model improvement, "
-        "but the docs do not state the retention period. "
-        "It retains Inkling 2 Small Free data and may use it for model training, but the docs do not state the "
-        "retention period."
+        "OpenCode Zen forwards requests for OpenAI and Anthropic models to those providers. "
+        "Those providers retain the requests for 30 days. "
+        "The OpenCode Zen privacy docs mention Mistral's retention policy. "
+        "They do not identify which models it applies to. "
+        "OpenCode Zen retains Beam Free prompts and other inputs for 30 days. "
+        "It does not use those inputs for training. "
+        "OpenCode Zen retains Iceman Free input data. "
+        "It uses that data for model improvement. The docs do not state the retention period. "
+        "OpenCode Zen retains Inkling 2 Small Free input data. "
+        "It may use that data for model training. The docs do not state the retention period."
     ),
 }
 
 
 def training_models(provider_name: str) -> frozenset[str]:
-    """Returns wire IDs for which the gateway may use input data for training or model improvement."""
+    """Returns wire IDs whose input data the gateway may use for training or model improvement."""
     return _TRAINING_MODELS.get(provider_name, frozenset())
 
 
 def training_violations(provider_name: str, wire_model_ids: Iterable[str]) -> list[str]:
-    """Returns an error message for each given wire ID that appears in the gateway's training or model-improvement list.
+    """Returns an error message for each given wire ID that appears in the gateway's model data-use list.
 
     Gateways with no published per-model policy return nothing: OpenRouter filters the offending providers out of
     the request itself, and Synthetic states that it never trains on prompts.

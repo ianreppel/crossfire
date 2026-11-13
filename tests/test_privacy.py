@@ -20,13 +20,16 @@ from crossfire.core.privacy import (
 from tests.helpers import LogCapture
 
 _ZEN_DATA_POLICY_NOTE = (
-    "OpenCode Zen forwards requests for OpenAI and Anthropic models to those providers, "
-    "which retain those requests for 30 days. "
-    "The Zen docs mention Mistral's retention policy but do not identify which models it applies to. "
-    "Zen retains Beam Free prompts and other inputs for 30 days without using them for training. "
-    "It retains Iceman Free data and uses it for model improvement, but the docs do not state the retention period. "
-    "It retains Inkling 2 Small Free data and may use it for model training, but the docs do not state the "
-    "retention period."
+    "OpenCode Zen forwards requests for OpenAI and Anthropic models to those providers. "
+    "Those providers retain the requests for 30 days. "
+    "The OpenCode Zen privacy docs mention Mistral's retention policy. "
+    "They do not identify which models it applies to. "
+    "OpenCode Zen retains Beam Free prompts and other inputs for 30 days. "
+    "It does not use those inputs for training. "
+    "OpenCode Zen retains Iceman Free input data. "
+    "It uses that data for model improvement. The docs do not state the retention period. "
+    "OpenCode Zen retains Inkling 2 Small Free input data. "
+    "It may use that data for model training. The docs do not state the retention period."
 )
 
 
