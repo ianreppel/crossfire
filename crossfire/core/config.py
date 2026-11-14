@@ -18,7 +18,7 @@ from crossfire.core.domain import (
     ProviderConfiguration,
     SearchConfiguration,
 )
-from crossfire.core.presets import UnknownPresetError, expand_preset
+from crossfire.core.language import resolve_language
 
 DEFAULT_CONFIGURATION_FILENAME = "crossfire.toml"
 
@@ -144,32 +144,8 @@ def _parse_providers(raw: dict[str, Any]) -> tuple[ProviderConfiguration, ...]:
 
 
 def _parse_language_section(section: dict[str, Any]) -> LanguageConfiguration:
-    """Builds a language configuration from a ``[language]``-shaped mapping.
-
-    Absent keys fall back to :class:`LanguageConfiguration` defaults, which describe today's single English branch.
-    """
-    defaults = LanguageConfiguration()
-    branches = section.get("branches")
-    preset = section.get("preset")
-    competence_branch = section.get("competence_branch")
-    render_language = section.get("render_language")
-    configuration = LanguageConfiguration(
-        source=str(section.get("source", defaults.source)),
-        branches=tuple(str(branch) for branch in branches) if branches is not None else defaults.branches,
-        preset=str(preset) if preset is not None else defaults.preset,
-        competence_branch=str(competence_branch) if competence_branch is not None else defaults.competence_branch,
-        render_language=str(render_language) if render_language is not None else defaults.render_language,
-        translate_instruction=bool(section.get("translate_instruction", defaults.translate_instruction)),
-        adjudicate=bool(section.get("adjudicate", defaults.adjudicate)),
-        translator_backend=str(section.get("translator_backend", defaults.translator_backend)),
-    )
-    if configuration.preset is None:
-        return configuration
-    try:
-        return replace(configuration, branches=expand_preset(configuration.preset))
-    except UnknownPresetError:
-        # An unknown preset is a configuration error, reported by language validation before any model call.
-        return configuration
+    """Resolves the global ``[language]`` layer, with defaults for every key it does not set."""
+    return resolve_language(global_=section)[0]
 
 
 def _parse_language_modes(section: dict[str, Any]) -> dict[str, dict[str, Any]]:

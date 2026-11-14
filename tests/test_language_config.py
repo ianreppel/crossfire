@@ -6,6 +6,7 @@ from pathlib import Path
 
 from crossfire.core.config import load_configuration
 from crossfire.core.domain import LanguageConfiguration
+from crossfire.core.language import resolve_language
 from crossfire.core.presets import LANGUAGE_PRESETS
 
 
@@ -49,3 +50,14 @@ class TestLanguageConfiguration:
         assert configuration.language.preset == "multilingual"
         assert configuration.language.branches == ("en", "zh", "de", "ja", "fr")
         assert LANGUAGE_PRESETS["multilingual-wide"] == ("en", "zh", "de", "ja", "fr", "es", "hi")
+
+    def test_explicit_branches_beat_preset(self) -> None:
+        resolved, provenance = resolve_language(
+            cli={"branches": ["en", "ko"]},
+            mode_override=None,
+            global_={"preset": "multilingual"},
+        )
+
+        assert resolved.branches == ("en", "ko")
+        assert resolved.preset is None
+        assert provenance["branches"] == "cli"
