@@ -282,6 +282,24 @@ class ModelGroupOverrides:
 
 
 @dataclass(frozen=True)
+class LanguageConfiguration:
+    """Language surface for a run: one branch per language, plus the source and render languages.
+
+    The defaults describe today's pipeline: one English branch, no preset, no render language.
+    A single-branch run translates nothing and adjudicates nothing, whatever the flags say.
+    """
+
+    source: str = "en"
+    branches: tuple[str, ...] = ("en",)
+    preset: str | None = None
+    competence_branch: str | None = None
+    render_language: str | None = None
+    translate_instruction: bool = True
+    adjudicate: bool = True
+    translator_backend: str = "llm"
+
+
+@dataclass(frozen=True)
 class CrossfireConfiguration:
     """Top-level configuration: model groups, search, limits, and per-mode overrides"""
 
@@ -307,6 +325,8 @@ class CrossfireConfiguration:
     search: SearchConfiguration = field(default_factory=SearchConfiguration)
     limits: LimitsConfiguration = field(default_factory=LimitsConfiguration)
     mode_overrides: dict[str, ModelGroupOverrides] = field(default_factory=dict)
+    language: LanguageConfiguration = field(default_factory=LanguageConfiguration)
+    language_modes: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     def active_provider(self) -> ProviderConfiguration:
         """Returns the provider selected by :attr:`provider`, falling back to the first configured one."""

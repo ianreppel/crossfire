@@ -11,6 +11,7 @@ from typing import Any
 from crossfire.core.domain import (
     DEFAULT_PROVIDER_CONFIGURATIONS,
     CrossfireConfiguration,
+    LanguageConfiguration,
     LimitsConfiguration,
     ModelGroup,
     ModelGroupOverrides,
@@ -141,6 +142,36 @@ def _parse_providers(raw: dict[str, Any]) -> tuple[ProviderConfiguration, ...]:
     return tuple(providers.values())
 
 
+def _parse_language_section(section: dict[str, Any]) -> LanguageConfiguration:
+    """Builds a language configuration from a ``[language]``-shaped mapping.
+
+    Absent keys fall back to :class:`LanguageConfiguration` defaults, which describe today's single English branch.
+    """
+    defaults = LanguageConfiguration()
+    branches = section.get("branches")
+    preset = section.get("preset")
+    competence_branch = section.get("competence_branch")
+    render_language = section.get("render_language")
+    return LanguageConfiguration(
+        source=str(section.get("source", defaults.source)),
+        branches=tuple(str(branch) for branch in branches) if branches is not None else defaults.branches,
+        preset=str(preset) if preset is not None else defaults.preset,
+        competence_branch=str(competence_branch) if competence_branch is not None else defaults.competence_branch,
+        render_language=str(render_language) if render_language is not None else defaults.render_language,
+        translate_instruction=bool(section.get("translate_instruction", defaults.translate_instruction)),
+        adjudicate=bool(section.get("adjudicate", defaults.adjudicate)),
+        translator_backend=str(section.get("translator_backend", defaults.translator_backend)),
+    )
+
+
+def _parse_language_modes(section: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Returns the raw ``[language.modes.*]`` layers, keyed by mode name."""
+    raw_modes = section.get("modes", {})
+    if not isinstance(raw_modes, dict):
+        return {}
+    return {str(mode): data for mode, data in raw_modes.items() if isinstance(data, dict)}
+
+
 def load_configuration(
     configuration_path: Path | None = None,
     cli_overrides: dict[str, Any] | None = None,
@@ -211,6 +242,10 @@ def load_configuration(
 
     mode_overrides = _parse_mode_overrides(raw.get("modes", {}))
 
+    language_section = raw.get("language", {})
+    if not isinstance(language_section, dict):
+        language_section = {}
+
     return CrossfireConfiguration(
         api_key_env=api_key_env,
         provider=provider_name,
@@ -222,6 +257,8 @@ def load_configuration(
         search=search,
         limits=limits,
         mode_overrides=mode_overrides,
+        language=_parse_language_section(language_section),
+        language_modes=_parse_language_modes(language_section),
     )
 
 
