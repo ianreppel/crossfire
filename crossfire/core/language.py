@@ -7,11 +7,15 @@ manifest can show it. No module, prompt or fixture hard-codes a language tag.
 
 from __future__ import annotations
 
+import re
 from dataclasses import fields
 from typing import Any
 
 from crossfire.core.domain import LanguageConfiguration
 from crossfire.core.presets import UnknownPresetError, expand_preset
+
+# A BCP-47 language tag: a two- or three-letter primary subtag, then optional alphanumeric subtags.
+_LANGUAGE_TAG_REGEX: re.Pattern[str] = re.compile(r"^[A-Za-z]{2,3}(-[A-Za-z0-9]{1,8})*$")
 
 # Field names of LanguageConfiguration, in declaration order.
 _LANGUAGE_FIELDS: tuple[str, ...] = tuple(field.name for field in fields(LanguageConfiguration))
@@ -112,4 +116,8 @@ def validate_language(configuration: LanguageConfiguration) -> list[str]:
         seen.add(branch)
     if duplicates:
         errors.append(f"language.branches has duplicate languages: {', '.join(duplicates)}")
+
+    malformed: list[str] = [branch for branch in branches if not _LANGUAGE_TAG_REGEX.match(branch)]
+    if malformed:
+        errors.append(f"language.branches has malformed BCP-47 tags: {', '.join(malformed)}")
     return errors

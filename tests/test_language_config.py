@@ -81,3 +81,9 @@ class TestLanguageValidation:
 
         assert any("duplicate" in error.lower() for error in errors), errors
         assert validate_language(LanguageConfiguration(branches=("en", "de"))) == []
+
+    def test_malformed_tag_is_a_config_error(self) -> None:
+        errors = validate_language(LanguageConfiguration(branches=("en", "not a language")))
+
+        assert any("bcp-47" in error.lower() or "malformed" in error.lower() for error in errors), errors
+        assert validate_language(LanguageConfiguration(branches=("en", "zh-Hant", "pt-BR"))) == []
