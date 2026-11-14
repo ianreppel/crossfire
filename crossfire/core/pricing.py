@@ -35,6 +35,8 @@ _DEFAULT_GENERATOR_OUTPUT = 5000
 _DEFAULT_REVIEWER_OUTPUT = 2000
 _DEFAULT_SYNTHESIZER_OUTPUT = 5000
 _DEFAULT_ENRICHER_OUTPUT = 2000
+_DEFAULT_TRANSLATOR_OUTPUT = 2000
+_DEFAULT_ADJUDICATOR_OUTPUT = 4000
 
 _TOKENS_PER_WORD = 1.4
 _WORDS_PER_PAGE = 500
@@ -229,8 +231,9 @@ def estimate_cost(
 ) -> CostEstimate:
     """Estimates the cost of a run by following the same model selection the runtime uses.
 
-    Prices the models each round actually picks (the first N generators, the reviewer window, the rotating synthesizer)
-    rather than averaging each group, so the estimate tracks the run instead of an abstract pool.
+    One ledger, branch identity on every entry: each branch pays its own instruction translation, enrichment, rounds and
+    synthesis, and the run pays for adjudication and the render once. Prices the models each round actually picks rather
+    than averaging each group, so the estimate tracks the run instead of an abstract pool.
     """
     missing: list[str] = []
     keys_for = _pricing_keys_for(configuration)
@@ -251,22 +254,20 @@ def estimate_cost(
     reviewer_output: int = min(_DEFAULT_REVIEWER_OUTPUT, configuration.reviewers.max_output_tokens)
     synthesizer_output: int = min(hint or _DEFAULT_SYNTHESIZER_OUTPUT, configuration.synthesizer.max_output_tokens)
     enricher_output: int = min(_DEFAULT_ENRICHER_OUTPUT, configuration.enricher.max_output_tokens)
+    translator_output: int = min(_DEFAULT_TRANSLATOR_OUTPUT, configuration.translator.max_output_tokens)
 
     num_generators: int = parameters.num_generators
     num_reviewers: int = parameters.num_reviewers_per_candidate
     num_rounds: int = parameters.num_rounds
 
     enrichment_active: bool = parameters.enrich and bool(configuration.enricher.names)
+    language = configuration.language
+    branches: tuple[str, ...] = language.branches or ("en",)
+    translator_available: bool = bool(configuration.translator.names)
 
     # After enrichment the enriched instruction replaces the original in all
     # downstream phases (generation, review, synthesis).
     effective_instruction_tokens: int = enricher_output if enrichment_active else instruction_tokens
-
-    total: float = 0.0
-
-    # -- enrichment: real input tokens --
-    if enrichment_active:
-        total += cost_of(configuration.enricher.names[0], instruction_tokens + context_tokens, enricher_output)
 
     generator_models: list[str] = _selected_generator_models(configuration.generators, num_generators)
     generation_input_round_1: int = effective_instruction_tokens + context_tokens
@@ -278,23 +279,52 @@ def estimate_cost(
         + num_generators * num_reviewers * reviewer_output
     )
 
-    for round_num in range(1, num_rounds + 1):
-        generation_input: int = generation_input_round_1 if round_num == 1 else generation_input_round_n
-        for model in generator_models:
-            total += cost_of(model, generation_input, generator_output)
+    per_branch: list[tuple[str, float]] = []
+    for branch in branches:
+        branch_total: float = 0.0
+        translated: bool = language.translate_instruction and branch != language.source and translator_available
+        if translated:
+            branch_total += cost_of(configuration.translator.names[0], instruction_tokens, translator_output)
+        if enrichment_active:
+            enrichment_input = instruction_tokens + context_tokens
+            branch_total += cost_of(configuration.enricher.names[0], enrichment_input, enricher_output)
 
-        for model in _selected_reviewer_models(configuration.reviewers, num_generators, num_reviewers, round_num):
-            total += cost_of(model, reviewer_input, reviewer_output)
+        for round_num in range(1, num_rounds + 1):
+            generation_input: int = generation_input_round_1 if round_num == 1 else generation_input_round_n
+            for model in generator_models:
+                branch_total += cost_of(model, generation_input, generator_output)
 
-        if configuration.synthesizer.names:
-            synthesizer_model: str = configuration.synthesizer.names[
-                (round_num - 1) % len(configuration.synthesizer.names)
-            ]
-            total += cost_of(synthesizer_model, synthesis_input, synthesizer_output)
+            for model in _selected_reviewer_models(configuration.reviewers, num_generators, num_reviewers, round_num):
+                branch_total += cost_of(model, reviewer_input, reviewer_output)
+
+            if configuration.synthesizer.names:
+                synthesizer_model: str = configuration.synthesizer.names[
+                    (round_num - 1) % len(configuration.synthesizer.names)
+                ]
+                branch_total += cost_of(synthesizer_model, synthesis_input, synthesizer_output)
+        per_branch.append((branch, branch_total))
+
+    total: float = sum(branch_total for _branch, branch_total in per_branch)
+
+    # Adjudication reads every branch synthesis plus the claim list, once per packet. One packet is the floor; the
+    # packetiser decides the actual count at run time.
+    if len(branches) >= 2 and language.adjudicate and configuration.adjudicator.names:
+        adjudicator_window = configuration.adjudicator.resolve_context_window(configuration.adjudicator.names[0])
+        adjudicator_output = min(_DEFAULT_ADJUDICATOR_OUTPUT, adjudicator_window // 4)
+        adjudication_input: int = len(branches) * synthesizer_output + instruction_tokens
+        total += cost_of(configuration.adjudicator.names[0], adjudication_input, adjudicator_output)
+
+    # The render translates the prose around the verbatim passages, section by section.
+    if len(branches) >= 2 and language.render_language and translator_available:
+        render_sections: int = max(1, num_generators * num_rounds)
+        render_input = render_sections * synthesizer_output
+        render_output = render_sections * translator_output
+        total += cost_of(configuration.translator.names[0], render_input, render_output)
 
     unique_missing: tuple[str, ...] = tuple(dict.fromkeys(missing))
     return CostEstimate(
         total_usd=total,
         missing_models=unique_missing,
         fetched_at=fetched_at,
+        per_branch=tuple(per_branch),
     )

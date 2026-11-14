@@ -227,6 +227,8 @@ class TUI:
         table.add_row("Rounds completed", str(rounds_completed))
 
         if cost_estimate is not None:
+            for branch, branch_cost in cost_estimate.per_branch:
+                table.add_row(f"Branch {branch} estimate", f"${branch_cost:.2f}")
             table.add_row("Estimated cost", f"${cost_estimate.total_usd:.2f}")
             if cost_estimate.missing_models:
                 table.add_row("Unpriced models", ", ".join(cost_estimate.missing_models))

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +13,7 @@ from crossfire.core.domain import (
     CostEntry,
     CostTracker,
     CrossfireConfiguration,
+    LanguageConfiguration,
     LimitsConfiguration,
     Mode,
     ModelGroup,
@@ -587,3 +589,43 @@ class TestEstimateCost:
         estimate = estimate_cost(_estimation_configuration, parameters, _estimation_pricing, "")
         with pytest.raises(AttributeError):
             estimate.total_usd = 0.0  # type: ignore[misc]
+
+class TestBranchEstimate:
+    def test_estimate_scales_with_branch_count(
+        self,
+        _estimation_configuration: CrossfireConfiguration,
+        _estimation_pricing: dict[str, tuple[float, float]],
+    ):
+        parameters = RunParameters(
+            mode=Mode.RESEARCH,
+            task=Task(instruction="Test instruction"),
+            num_generators=2,
+            num_reviewers_per_candidate=1,
+            num_rounds=2,
+            dry_run=True,
+            enrich=True,
+        )
+        priced = {
+            **_estimation_pricing,
+            "vendor/trans-a": (0.0000003, 0.000001),
+            "vendor/adj-a": (0.000003, 0.000015),
+        }
+        single = replace(
+            _estimation_configuration,
+            translator=ModelGroup(names=("openrouter:vendor/trans-a",), context_window=16000),
+            adjudicator=ModelGroup(names=("openrouter:vendor/adj-a",), context_window=200000),
+            language=LanguageConfiguration(source="en", branches=("en",)),
+        )
+        pair = replace(single, language=LanguageConfiguration(source="en", branches=("en", "de")))
+
+        one = estimate_cost(single, parameters, priced, "2026-11-14T00:00:00Z")
+        two = estimate_cost(pair, parameters, priced, "2026-11-14T00:00:00Z")
+
+        assert one.total_usd == pytest.approx(sum(cost for _branch, cost in one.per_branch))
+        assert [branch for branch, _cost in one.per_branch] == ["en"]
+        assert [branch for branch, _cost in two.per_branch] == ["en", "de"]
+        assert two.total_usd > one.total_usd, "a second branch multiplies the loop"
+        assert two.total_usd > sum(cost for _branch, cost in two.per_branch), (
+            "adjudication input grows with every branch synthesis and is priced"
+        )
+        assert two.missing_models == ()

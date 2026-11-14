@@ -644,6 +644,7 @@ class CostEstimate:
     total_usd: float
     missing_models: tuple[str, ...] = ()
     fetched_at: str = ""
+    per_branch: tuple[tuple[str, float], ...] = ()
 
 
 @dataclass

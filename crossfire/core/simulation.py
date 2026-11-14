@@ -30,6 +30,13 @@ def simulate_response(
     third_hex_digit = int(digest[2], 16)
     emit_search = third_hex_digit > 10  # deterministic ~31% chance of a search request
 
+    if role == "adjudicator":
+        # A dry run cannot judge, so it returns an empty comparison with a valid envelope rather than a fake verdict.
+        return (
+            '{"crossfire_adjudication": {"verdicts": []}}\n'
+            'CROSSFIRE-ADJUDICATION {"claims": 0, "unavailable": 0}'
+        )
+
     if role == "translator":
         # A simulated translation is the text it was given: deterministic, and honest about carrying no new content.
         return instruction

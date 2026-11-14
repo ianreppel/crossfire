@@ -176,6 +176,8 @@ def run(
     cost_estimate: CostEstimate | None = None
     if parameters.dry_run:
         cost_estimate = _try_estimate_cost(configuration, parameters)
+        if cost_estimate is not None and verbose:
+            _print_cost_estimate(cost_estimate)
 
     archive_path: Path = Path(run_dir or f"runs/{datetime.now().strftime('%Y-%m-%dT%H-%M-%S')}")
 
@@ -314,8 +316,6 @@ async def _execute(
         result: str = await orchestrator.run()
         if tui:
             tui.finish(orchestrator.cost_tracker.summarize(), cost_estimate=cost_estimate)
-        elif cost_estimate is not None:
-            _print_cost_estimate(cost_estimate)
         return result
     except Exception:
         if tui:
@@ -324,7 +324,9 @@ async def _execute(
 
 
 def _print_cost_estimate(cost_estimate: CostEstimate) -> None:
-    """Prints the cost estimate to stderr (verbose mode fallback when TUI is not active)."""
+    """Prints the per-branch estimate and the total to stderr before launch."""
+    for branch, branch_cost in cost_estimate.per_branch:
+        click.echo(f"Estimated cost for branch {branch}: ${branch_cost:.2f}", err=True)
     click.echo(f"Estimated cost: ${cost_estimate.total_usd:.2f}", err=True)
     if cost_estimate.missing_models:
         click.echo(f"Unpriced models: {', '.join(cost_estimate.missing_models)}", err=True)
