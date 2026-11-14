@@ -7,6 +7,18 @@ from pathlib import Path
 
 import pytest
 
+from crossfire.core.archive import RunArchive
+from crossfire.core.domain import (
+    CrossfireConfiguration,
+    LimitsConfiguration,
+    Mode,
+    ModelGroup,
+    RunParameters,
+    SearchConfiguration,
+    Task,
+)
+from crossfire.core.hashing import sha256_text
+from crossfire.core.orchestrator import Orchestrator
 from tests.fakes.transport import FakeTransport
 from tests.helpers import orchestrator_for
 
@@ -50,3 +62,51 @@ class TestBranchPipeline:
         assert fake_transport.count("synthesizer") == 2
         assert (tmp_path / "branches" / "en" / "instruction.md").read_text(encoding="utf-8") == english_instruction
         assert (tmp_path / "original-instruction.md").read_text(encoding="utf-8") == instruction
+
+# The output and layout this run produced before the dual-language work started, captured from a894f86.
+GOLDEN_SHA256 = "77d5b8f3c360206843269cc4d015bf1f34d4bbbbd7d70397306b2c072fd31b59"
+GOLDEN_FILES = {
+    "final.md",
+    "meta.json",
+    "original-instruction.md",
+    "round-1/candidate-0-gen-a.md",
+    "round-1/candidate-1-gen-b.md",
+    "round-1/review-c0-rev-a.md",
+    "round-1/review-c0-rev-b.md",
+    "round-1/review-c1-rev-c.md",
+    "round-1/review-c1-rev-d.md",
+    "round-1/synthesis.md",
+    "round-2/candidate-0-gen-a.md",
+    "round-2/candidate-1-gen-b.md",
+    "round-2/review-c0-rev-b.md",
+    "round-2/review-c0-rev-c.md",
+    "round-2/review-c1-rev-a.md",
+    "round-2/review-c1-rev-d.md",
+    "round-2/synthesis.md",
+}
+
+
+class TestSingleBranchCompatibility:
+    @pytest.mark.asyncio
+    async def test_single_branch_output_matches_todays_bytes(self, tmp_path: Path) -> None:
+        configuration = CrossfireConfiguration(
+            generators=ModelGroup(names=("gen-a", "gen-b"), context_window=16000),
+            reviewers=ModelGroup(names=("rev-a", "rev-b", "rev-c", "rev-d"), context_window=16000),
+            synthesizer=ModelGroup(names=("synth-a",), context_window=32000),
+            search=SearchConfiguration(enabled=False),
+            limits=LimitsConfiguration(max_concurrent_requests=10, temperature_generators=0.2),
+        )
+        parameters = RunParameters(
+            mode=Mode.RESEARCH,
+            task=Task(instruction="Write a summary of AI in quantum computing.", context="Background info."),
+            num_generators=2,
+            num_reviewers_per_candidate=2,
+            num_rounds=2,
+            dry_run=True,
+        )
+
+        result = await Orchestrator(configuration, parameters, archive=RunArchive(tmp_path)).run()
+
+        assert sha256_text(result) == GOLDEN_SHA256
+        files = {str(path.relative_to(tmp_path)) for path in tmp_path.rglob("*") if path.is_file()}
+        assert files == GOLDEN_FILES, "a one-branch run keeps today's archive layout"
