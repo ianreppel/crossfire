@@ -58,3 +58,22 @@ class TestResume:
         assert translators == 0, "the attested translation is reused, not paid for twice"
         final = (tmp_path / "final.md").read_text(encoding="utf-8")
         assert final.strip()
+
+    @pytest.mark.asyncio
+    async def test_resume_reruns_a_round_whose_artefact_was_torn(
+        self, fake_transport: FakeTransport, tmp_path: Path
+    ) -> None:
+        """A kill between two units leaves a torn artefact; the hash rule redoes exactly that round."""
+        instruction = "Explain the Nanjing death toll with sources."
+        first = orchestrator_for(instruction, tmp_path, num_rounds=3, branches=("en", "de"))
+        await first.run()
+        settled = fake_transport.count("generator")
+
+        torn = tmp_path / "branches" / "en" / "round-2" / "synthesis.md"
+        torn.write_text("half a synthesis", encoding="utf-8")
+
+        resumed = orchestrator_for(instruction, tmp_path, num_rounds=3, branches=("en", "de"), resume=True)
+        await resumed.run()
+
+        assert fake_transport.count("generator") - settled == 1, "only the torn round is re-run, for one branch"
+        assert torn.read_text(encoding="utf-8") != "half a synthesis"
