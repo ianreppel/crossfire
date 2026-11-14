@@ -87,5 +87,13 @@ class TestAdjudication:
         stored_ids = {span["id"]: span["sha256"] for span in evidence}
         assert source_id in stored_ids, "the source span is in the registry, with its hash"
         assert stored_ids[source_id]
+        published_ids = [
+            token
+            for line in cross_branch.splitlines()
+            if line.startswith("Evidence: ")
+            for token in line.removeprefix("Evidence: ").rstrip(".").split(", ")
+        ]
+        assert published_ids, "the published verdict names the evidence it rests on"
+        assert set(published_ids) <= set(stored_ids), "every published id resolves in evidence.jsonl"
         manifest = json.loads((tmp_path / "meta.json").read_text(encoding="utf-8"))
         assert manifest["language"]["branches"] == ["en", "de"]

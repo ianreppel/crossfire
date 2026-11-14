@@ -414,10 +414,13 @@ class Orchestrator:
         if self._archive:
             self._archive.save_evidence(registry.spans())
         model = self.configuration.adjudicator.names[0]
+        # The syntheses and the evidence listing travel with every packet, so they count against the window too.
+        overhead = estimate_tokens("".join(syntheses.values()) + "".join(span.text for span in registry.spans()))
         packets = partition_claims(
             claims,
             context_window=self.configuration.adjudicator.resolve_context_window(model),
             max_output_tokens=self.configuration.adjudicator.resolve_max_output_tokens(model),
+            overhead_tokens=overhead,
         )
 
         verdicts: list[CrossBranchVerdict] = []
@@ -438,6 +441,8 @@ class Orchestrator:
                     )
                     parse_control_envelope(text)
                     parsed = parse_cross_branch_verdicts(text)
+                except _FATAL_ERRORS:
+                    raise
                 except Exception as exception:
                     error = str(exception)
                     continue
@@ -521,6 +526,8 @@ class Orchestrator:
                 round_num=0,
                 max_retries=0,
             )
+        except _FATAL_ERRORS:
+            raise
         except Exception as exception:
             log.log_translation_failed(
                 branch=target_language,
