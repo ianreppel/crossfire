@@ -18,6 +18,7 @@ from crossfire.core.compression import compress_prompt_components
 from crossfire.core.config import get_api_key
 from crossfire.core.domain import (
     Branch,
+    BranchState,
     Candidate,
     CostEntry,
     CostTracker,
@@ -43,6 +44,7 @@ from crossfire.core.prompts import (
     build_generator_prompt,
     build_reviewer_prompt,
     build_synthesizer_prompt,
+    build_translation_prompt,
     parse_control_envelope,
     parse_synthesis_decision,
     strip_synthesis_decision,
@@ -198,12 +200,36 @@ class Orchestrator:
         """Returns *branch* with its instruction ready for enrichment.
 
         Translation is skipped only when the branch language equals the source language, never on a guess. The source
-        branch therefore spends no translation call and is attested as its own original.
+        branch therefore spends no translation call and is attested as its own original. A translated branch is attested
+        with the translator's model id, the hash of what came back, and its own artefact under ``branches/<lang>``.
         """
+        original = self.parameters.task.instruction
         if branch.instruction_text:
             return branch
-        original = self.parameters.task.instruction
-        return replace(branch, instruction_text=original, instruction_hash=sha256_text(original))
+        needs_translation = self.language.translate_instruction and branch.language != self.language.source
+        if not needs_translation:
+            return replace(branch, instruction_text=original, instruction_hash=sha256_text(original))
+
+        model = self.configuration.translator.names[0]
+        system, user = build_translation_prompt(f"{self.language.source}->{branch.language}", original)
+        text = await self._call_llm(
+            model=model,
+            system_prompt=system,
+            user_prompt=user,
+            role=Role.TRANSLATOR,
+            round_num=0,
+            max_retries=0,
+        )
+        translated = text.strip()
+        if self._archive:
+            self._archive.save_branch_instruction(branch.language, translated)
+        return replace(
+            branch,
+            instruction_text=translated,
+            instruction_model=model,
+            instruction_hash=sha256_text(translated),
+            state=BranchState.TRANSLATED,
+        )
 
     # -- high-level entry point ---
 
@@ -1091,6 +1117,8 @@ class Orchestrator:
             return self.configuration.reviewers
         if role is Role.SYNTHESIZER:
             return self.configuration.synthesizer
+        if role is Role.TRANSLATOR:
+            return self.configuration.translator
         return self.configuration.enricher
 
     def _load_pricing(self) -> dict[str, tuple[float, float]]:

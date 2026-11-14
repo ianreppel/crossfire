@@ -289,6 +289,7 @@ class ModelGroupOverrides:
     reviewers: ModelGroup | None = None
     synthesizer: ModelGroup | None = None
     enricher: ModelGroup | None = None
+    translator: ModelGroup | None = None
 
 
 class BranchState(enum.StrEnum):
@@ -363,6 +364,13 @@ class CrossfireConfiguration:
             max_output_tokens=32000,
         )
     )
+    translator: ModelGroup = field(
+        default_factory=lambda: ModelGroup(
+            names=(),
+            context_window=16000,
+            max_output_tokens=4096,
+        )
+    )
     search: SearchConfiguration = field(default_factory=SearchConfiguration)
     limits: LimitsConfiguration = field(default_factory=LimitsConfiguration)
     mode_overrides: dict[str, ModelGroupOverrides] = field(default_factory=dict)
@@ -407,6 +415,7 @@ class CrossfireConfiguration:
             generators=keep(self.generators),
             reviewers=keep(self.reviewers),
             synthesizer=keep(self.synthesizer),
+            translator=keep(self.translator),
         )
 
     def resolve_for_mode(self, mode: str) -> CrossfireConfiguration:
@@ -420,6 +429,7 @@ class CrossfireConfiguration:
             generators=overrides.generators or self.generators,
             reviewers=overrides.reviewers or self.reviewers,
             synthesizer=overrides.synthesizer or self.synthesizer,
+            translator=overrides.translator or self.translator,
         )
         return resolved.for_active_provider()
 
@@ -431,7 +441,7 @@ class CrossfireConfiguration:
         """
         provider = self.active_provider()
         notices: list[str] = []
-        for group in (self.enricher, self.generators, self.reviewers, self.synthesizer):
+        for group in (self.enricher, self.generators, self.reviewers, self.synthesizer, self.translator):
             wire_model_ids = [provider.resolve_wire_model_id(model) for model in group.names]
             notices.extend(privacy.retention_notices(provider.name, wire_model_ids))
         gateway_data_policy_note = privacy.gateway_data_policy_note(provider.name)
@@ -483,6 +493,7 @@ class CrossfireConfiguration:
             ("generators", self.generators),
             ("reviewers", self.reviewers),
             ("synthesizer", self.synthesizer),
+            ("translator", self.translator),
         ]:
             if not active_provider.allow_training_models:
                 wire_model_ids = [active_provider.resolve_wire_model_id(model) for model in group.names]

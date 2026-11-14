@@ -52,6 +52,9 @@ class RunArchive:
     def save_original_instruction(self, text: str) -> None:
         self._write("original-instruction.md", text)
 
+    def save_branch_instruction(self, language: str, text: str) -> None:
+        self._write(f"branches/{language}/instruction.md", text)
+
     def save_enriched(self, text: str) -> None:
         self._write("enriched-instruction.md", text)
 

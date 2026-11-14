@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
+import httpx
 import pytest
 
+from crossfire.core.archive import RunArchive
 from crossfire.core.domain import (
     BranchState,
     CrossfireConfiguration,
@@ -26,25 +30,29 @@ def two_branch_configuration() -> CrossfireConfiguration:
         generators=ModelGroup(names=("gen-a",), context_window=16000),
         reviewers=ModelGroup(names=("rev-a",), context_window=16000),
         synthesizer=ModelGroup(names=("synth-a",), context_window=32000),
+        translator=ModelGroup(names=("trans-a",), context_window=16000),
         search=SearchConfiguration(enabled=False),
         limits=LimitsConfiguration(max_concurrent_requests=2),
         language=LanguageConfiguration(source="en", branches=("en", "de")),
     )
 
 
-def orchestrator_for(instruction: str) -> Orchestrator:
-    """Builds an orchestrator over one round, ready to translate without a dry run."""
+def orchestrator_for(instruction: str, archive_base: Path) -> Orchestrator:
+    """Builds an orchestrator over one round, ready to translate through the fake transport."""
     parameters = RunParameters(mode=Mode.RESEARCH, task=Task(instruction=instruction), num_rounds=1)
-    orchestrator = Orchestrator(two_branch_configuration(), parameters)
+    orchestrator = Orchestrator(two_branch_configuration(), parameters, archive=RunArchive(archive_base))
     orchestrator._api_key = "offline-test-key"
+    orchestrator._http_client = httpx.AsyncClient()
     return orchestrator
 
 
 class TestInstructionTranslation:
     @pytest.mark.asyncio
-    async def test_source_branch_spends_no_translation(self, fake_transport: FakeTransport) -> None:
+    async def test_source_branch_spends_no_translation(
+        self, fake_transport: FakeTransport, tmp_path: Path
+    ) -> None:
         instruction = "Explain the Nanjing death toll with sources."
-        orchestrator = orchestrator_for(instruction)
+        orchestrator = orchestrator_for(instruction, tmp_path)
 
         branches = orchestrator._build_branches(orchestrator.configuration)
         source = await orchestrator._translate_instruction(branches[0])
@@ -56,3 +64,25 @@ class TestInstructionTranslation:
         assert source.state is BranchState.PENDING
         assert branches[1].instruction_text == "", "the German branch is not translated yet"
         assert fake_transport.count("translator") == 0
+
+    @pytest.mark.asyncio
+    async def test_translation_is_attested_with_model_and_hash(
+        self, fake_transport: FakeTransport, tmp_path: Path
+    ) -> None:
+        instruction = "Explain the Nanjing death toll with sources."
+        german = "Erklären Sie die Opferzahl von Nanjing anhand von Quellen."
+        fake_transport.queue("translator", german)
+        orchestrator = orchestrator_for(instruction, tmp_path)
+
+        branch = await orchestrator._translate_instruction(orchestrator._build_branches(orchestrator.configuration)[1])
+
+        assert branch.language == "de"
+        assert branch.instruction_text == german
+        assert branch.instruction_model == "trans-a"
+        assert branch.instruction_hash == sha256_text(german)
+        assert branch.state is BranchState.TRANSLATED
+        assert fake_transport.count("translator") == 1
+        assert (tmp_path / "branches" / "de" / "instruction.md").read_text(encoding="utf-8") == german
+        translate_prompt = fake_transport.texts("translator")[0]
+        assert translate_prompt.startswith("[TRANSLATE en->de]")
+        assert instruction in translate_prompt

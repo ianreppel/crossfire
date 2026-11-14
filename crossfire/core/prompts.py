@@ -525,6 +525,26 @@ def build_synthesizer_prompt(
     return system, user
 
 
+_TRANSLATOR_SYSTEM = (
+    "You are a translator. Translate the text you are given into the target language.\n\n"
+    "- Preserve the structure, headings and line breaks exactly\n"
+    "- Reproduce every number, date, citation, identifier, URL and quoted title byte for byte\n"
+    "- Do not translate names of people, journals, publishers or works\n"
+    "- Add no commentary, no notes and no preamble\n"
+    "- Output the translation alone"
+)
+
+
+def build_translation_prompt(direction: str, path: str) -> tuple[str, str]:
+    """Builds the translation prompt for one instruction.
+
+    *direction* is ``"<source>-><target>"`` and *path* is the text to translate. Citations, numbers and identifiers
+    travel through unchanged, and the fidelity gate checks that they did.
+    """
+    user = f"[TRANSLATE {direction}]\n{path}"
+    return _TRANSLATOR_SYSTEM, user
+
+
 _FENCED_BLOCK_REGEX = re.compile(r"```([a-zA-Z0-9_-]*)[ \t]*\n(.*?)```[ \t]*\n?", re.DOTALL)
 
 
