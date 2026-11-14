@@ -362,6 +362,10 @@ class Orchestrator:
                 verdicts, published = await self._adjudicate_branches(synthesised)
                 if self._archive and verdicts:
                     self._archive.save_cross_branch(published)
+                if verdicts and self.language.render_language:
+                    result = await self._render_output(verdicts, synthesised)
+                    if self._archive:
+                        self._archive.save_render(self.language.render_language, result)
 
             if self._archive:
                 if len(branches) > 1:
@@ -442,6 +446,75 @@ class Orchestrator:
                 path="cross-branch.md",
             )
         return verdicts, render_cross_branch(verdicts, syntheses=syntheses, adjudicator=model, incomplete=incomplete)
+
+    async def _render_output(
+        self,
+        verdicts: list[CrossBranchVerdict],
+        contexts: list[BranchContext],
+    ) -> str:
+        """Assembles the reader's language from the verdicts, never from a single branch's synthesis.
+
+        Per claim the render carries the state, every branch's verbatim passage in its own script, and the evidence ids
+        that were checked. The prose around the passages is translated into the render language, and a translation that
+        fails leaves the source prose in place rather than inventing any.
+        """
+        render_language = self.language.render_language or self.language.source
+        branches = [context.branch.language for context in contexts]
+        header = (
+            f"# Crossfire render ({render_language})\n\n"
+            "This file is a non-attested translation assembled from the cross-branch comparison. "
+            "It is not evidence and it is not any one branch's synthesis.\n\n"
+            f"Branches: {', '.join(branches)}. Claims compared: {len(verdicts)}."
+        )
+        lines: list[str] = [await self._translate_render_prose(header, render_language)]
+        for verdict in verdicts:
+            prose = f"## {verdict.claim}\n\nState: {verdict.state.value}."
+            lines.append("")
+            lines.append(await self._translate_render_prose(prose, render_language))
+            for branch, passage in verdict.by_branch.items():
+                lines.append(f"- {branch}: {passage or '(omitted)'}")
+            if verdict.evidence_ids:
+                lines.append(f"Evidence: {', '.join(verdict.evidence_ids)}.")
+        rendered = "\n".join(lines).rstrip() + "\n"
+        if self._archive:
+            self._archive.journal.append("rendered", language=render_language, claims=len(verdicts))
+        return rendered
+
+    async def _translate_render_prose(self, text: str, target_language: str) -> str:
+        """Translates one render section into *target_language*, keeping its protected spans byte-identical.
+
+        A failed or unfaithful translation returns the source prose unchanged: a render is not attested, so a missing
+        rendering is reported rather than shouted, but nothing invented is ever substituted for it.
+        """
+        if target_language == self.language.source:
+            return text
+        masked, spans = extract_do_not_translate(text)
+        system, user = build_translation_prompt(f"{self.language.source}->{target_language}", masked)
+        try:
+            reply = await self._call_llm(
+                model=self.configuration.translator.names[0],
+                system_prompt=system,
+                user_prompt=user,
+                role=Role.TRANSLATOR,
+                round_num=0,
+                max_retries=0,
+            )
+        except Exception as exception:
+            log.log_translation_failed(
+                branch=target_language,
+                model=self.configuration.translator.names[0],
+                error=f"render prose: {exception}",
+            )
+            return text
+        translated = reply.strip()
+        if not translated or fidelity_violations(masked, translated, spans):
+            log.log_translation_failed(
+                branch=target_language,
+                model=self.configuration.translator.names[0],
+                error="render prose failed the fidelity gate",
+            )
+            return text
+        return restore_do_not_translate(translated, spans)
 
     def _build_evidence_registry(self, syntheses: dict[str, str]) -> EvidenceRegistry:
         """Stores the source, the context and every citation the branches produced."""

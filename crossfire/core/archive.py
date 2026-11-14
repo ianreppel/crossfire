@@ -138,6 +138,9 @@ class RunArchive:
     def save_enriched(self, text: str) -> None:
         self._write("enriched-instruction.md", text)
 
+    def save_render(self, language: str, text: str) -> None:
+        self._write(f"render/{language}.md", text)
+
     def save_cross_branch(self, text: str) -> None:
         self._write("cross-branch.md", text)
 

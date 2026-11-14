@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -65,6 +66,7 @@ def orchestrator_for(
     source: str = "en",
     branches: tuple[str, ...] = ("en", "de"),
     resume: bool = False,
+    render_language: str | None = None,
 ) -> Orchestrator:
     """Builds an orchestrator over *num_rounds* rounds, ready to call models through the fake transport."""
     parameters = RunParameters(
@@ -77,6 +79,9 @@ def orchestrator_for(
         early_stop=False,
     )
     configuration = two_branch_configuration(source=source, branches=branches)
+    if render_language is not None:
+        language = replace(configuration.language, render_language=render_language)
+        configuration = replace(configuration, language=language)
     orchestrator = Orchestrator(configuration, parameters, archive=RunArchive(archive_base))
     orchestrator._api_key = "offline-test-key"
     orchestrator._http_client = httpx.AsyncClient()
