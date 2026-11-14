@@ -241,14 +241,14 @@ class TestRoundFailure:
             orchestrator._progress.on_round_start(round_num, parameters.num_rounds)
             result = await orchestrator._run_round(round_num, previous)
             if result is not None:
-                orchestrator._consecutive_round_failures = 0
+                orchestrator._active_context.consecutive_round_failures = 0
                 previous = result.synthesis_text
             else:
-                orchestrator._consecutive_round_failures += 1
-                if orchestrator._consecutive_round_failures >= 2:
+                orchestrator._active_context.consecutive_round_failures += 1
+                if orchestrator._active_context.consecutive_round_failures >= 2:
                     break
 
-        assert orchestrator._consecutive_round_failures >= 2
+        assert orchestrator._active_context.consecutive_round_failures >= 2
 
         round_failures = [e for e in capture.records if e.get("event") == "round_failed"]
         assert len(round_failures) >= 2

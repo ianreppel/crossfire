@@ -29,5 +29,5 @@ class TestBranchIsolation:
         # The German branch is not translated yet, so its context falls back to the original rather than to nothing.
         assert branches[1].instruction_text == ""
         assert german.task.instruction == instruction
-        assert orchestrator._last_generator_search == {}
+        assert orchestrator._active_context.search_cache == {}
         assert orchestrator.parameters.task.instruction == instruction

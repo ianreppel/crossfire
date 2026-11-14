@@ -36,7 +36,7 @@ from crossfire.core.domain import (
 )
 from crossfire.core.exclamations import exclaim
 from crossfire.core.hashing import sha256_text
-from crossfire.core.language import resolve_language
+from crossfire.core.language import resolve_language, validate_language
 from crossfire.core.pricing import PRICING_FILENAME, load_pricing
 from crossfire.core.progress import NoOpProgress, ProgressCallback
 from crossfire.core.prompts import (
@@ -146,15 +146,20 @@ class Orchestrator:
         # preventing rate-limit (429) errors and connection exhaustion.
         self._semaphore = asyncio.Semaphore(configuration.limits.max_concurrent_requests)
         self._api_key: str = ""
-        self._last_generator_search: dict[int, str] = {}
         self._progress: ProgressCallback = progress or NoOpProgress()
         self._archive = archive
         self._http_client: httpx.AsyncClient | None = None
-        self._consecutive_round_failures = 0
         self._searches_performed: list[dict[str, str | int]] = []
         self._session_id = f"crossfire-{uuid4()}"
         self._pricing: dict[str, tuple[float, float]] | None = None
         self.language, self.language_provenance = self._resolve_language(configuration)
+        # The branch currently running: its own task, search cache and failure counter, never another branch's.
+        self._active_context: BranchContext = BranchContext(
+            branch=Branch(language=self.language.source),
+            task=parameters.task,
+        )
+        self._active_task: Task = parameters.task
+        self._active_archive: RunArchive | None = archive
 
     # -- language surface ---
 
@@ -193,7 +198,7 @@ class Orchestrator:
         The branch whose language is the source carries the original instruction, attested with its own hash and an
         empty model id. Every other branch starts empty and is translated by :meth:`_translate_instruction`.
         """
-        original = self.parameters.task.instruction
+        original = self._active_task.instruction
         branches: list[Branch] = []
         for tag in self.language.branches:
             branch = Branch(language=tag, is_competence_branch=tag == self.language.competence_branch)
@@ -209,8 +214,8 @@ class Orchestrator:
         search cache and the failure counter start empty: a branch never inherits another branch's state.
         """
         task = Task(
-            instruction=branch.instruction_text or self.parameters.task.instruction,
-            context=self.parameters.task.context,
+            instruction=branch.instruction_text or self._active_task.instruction,
+            context=self._active_task.context,
             language=branch.language,
         )
         return BranchContext(branch=branch, task=task)
@@ -222,7 +227,7 @@ class Orchestrator:
         branch therefore spends no translation call and is attested as its own original. A translated branch is attested
         with the translator's model id, the hash of what came back, and its own artefact under ``branches/<lang>``.
         """
-        original = self.parameters.task.instruction
+        original = self._active_task.instruction
         if branch.instruction_text:
             return branch
         needs_translation = self.language.translate_instruction and branch.language != self.language.source
@@ -280,11 +285,17 @@ class Orchestrator:
     # -- high-level entry point ---
 
     async def run(self) -> str:
-        """Runs all rounds and returns the final synthesis."""
+        """Runs every branch in turn and returns the reader's output.
+
+        A single branch behaves exactly as the pipeline always has: one enrichment, one round loop, one final synthesis.
+        More branches run sequentially, each in its own context with its own translated instruction, and their syntheses
+        are reconciled after the loops rather than inside them.
+        """
         errors = self.configuration.validate(
             self.parameters.num_generators,
             self.parameters.num_reviewers_per_candidate,
         )
+        errors.extend(validate_language(self.language))
         if errors:
             raise ValueError("; ".join(errors))
 
@@ -297,67 +308,25 @@ class Orchestrator:
             self._api_key = get_api_key(self.configuration)
             self._http_client = httpx.AsyncClient(timeout=self.configuration.limits.http_timeout)
 
-        original_instruction: str = self.parameters.task.instruction
-        previous_synthesis: str = ""
+        original_instruction: str = self._active_task.instruction
         try:
             if self._archive:
                 self._archive.save_original_instruction(original_instruction)
 
-            if self.parameters.enrich and self.configuration.enricher.names:
-                try:
-                    self.parameters = await self._enrich_instruction()
-                except _FATAL_ERRORS as exception:
-                    raise RunFailedError(exclaim(str(exception))) from exception
-                except Exception as exception:
-                    log.log_enrichment_failed(
-                        model=self.configuration.enricher.names[0],
-                        error=str(exception),
-                    )
-
-            for round_num in range(1, self.parameters.num_rounds + 1):
-                self._progress.on_round_start(round_num, self.parameters.num_rounds)
-                result = await self._run_round(round_num, previous_synthesis)
-
-                if result is not None:
-                    # Round succeeded: reset failure counter and update synthesis
-                    self._consecutive_round_failures = 0
-                    previous_synthesis = result.synthesis_text
-
-                    if (
-                        self.parameters.early_stop
-                        and round_num < self.parameters.num_rounds
-                        and result.reviews is not None
-                        and self._should_stop_early(result.reviews, self.parameters.early_stop_threshold)
-                    ):
-                        remaining = self.parameters.num_rounds - round_num
-                        log.log_early_stop(
-                            round=round_num,
-                            remaining_rounds=remaining,
-                            reason="no_weaknesses",
-                        )
-                        self._progress.on_run_end()
-                        break
-                else:
-                    # Round failed: increment failure counter and check if we should abort
-                    self._consecutive_round_failures += 1
-                    if self._consecutive_round_failures >= MAX_CONSECUTIVE_ROUND_FAILURES:
-                        start_round = round_num - self._consecutive_round_failures + 1
-                        raise RunFailedError(
-                            exclaim(
-                                f"Giving up: {self._consecutive_round_failures} consecutive "
-                                f"round failures ({start_round}-{round_num}). "
-                                "The models are having a bad day."
-                            )
-                        )
-            else:
-                # When the loop completes without an early stop
-                self._progress.on_run_end()
+            branches = self._build_branches(self.configuration)
+            contexts: list[BranchContext] = []
+            for branch in branches:
+                translated = await self._translate_instruction(branch)
+                if translated.state is BranchState.TRANSLATION_FAILED:
+                    log.log_branch_excluded(branch=translated.language, reason=BranchState.TRANSLATION_FAILED)
+                    continue
+                contexts.append(await self._run_branch(self._prepare_branch_context(translated)))
 
             cost = self.cost_tracker.summarize()
             log.log_cost_summary(cost)
 
-            # Abort if no content was generated across all rounds
-            if not previous_synthesis.strip():
+            synthesised = [context for context in contexts if context.branch.state is BranchState.SYNTHESIZED]
+            if not synthesised:
                 raise RunFailedError(
                     exclaim(
                         f"{self.parameters.num_rounds} rounds and nothing to show for it. "
@@ -365,26 +334,129 @@ class Orchestrator:
                     )
                 )
 
+            primary = self._primary_context(synthesised)
+            result: str = primary.synthesis_history[-1]
+
             if self._archive:
-                self._archive.save_final_synthesis(previous_synthesis)
-                self._archive.save_metadata(original_instruction, self.parameters, cost)
+                if len(branches) > 1:
+                    self._archive.save_final_synthesis(result)
+                self._archive.save_metadata(
+                    original_instruction,
+                    replace(self.parameters, task=primary.task),
+                    cost,
+                )
                 if self._searches_performed:
                     self._archive.save_searches(self._searches_performed)
-            return previous_synthesis
+            return result
         finally:
             if self._http_client is not None:
                 await self._http_client.aclose()
                 self._http_client = None
 
+    def _primary_context(self, contexts: list[BranchContext]) -> BranchContext:
+        """Returns the branch whose synthesis is the run's own output: the source branch when it survived."""
+        for context in contexts:
+            if context.branch.language == self.language.source:
+                return context
+        return contexts[0]
+
+    def _archive_for(self, branch: Branch) -> RunArchive | None:
+        """Returns the archive a branch writes to.
+
+        One branch keeps today's layout, with every artefact at the root of the run directory. More than one branch
+        writes into ``branches/<language>``, so two branches can never overwrite each other.
+        """
+        if self._archive is None:
+            return None
+        if len(self.language.branches) == 1:
+            return self._archive
+        return RunArchive(self._archive.base / "branches" / branch.language)
+
+    async def _run_branch(self, context: BranchContext) -> BranchContext:
+        """Runs today's round loop for one branch and returns its context.
+
+        Enrichment runs per branch, on the branch's own instruction. A branch that produces no synthesis is marked
+        ``branch_failed`` and left out of the reconciliation rather than aborting the other branches.
+        """
+        self._active_context = context
+        self._active_task = context.task
+        self._active_archive = self._archive_for(context.branch)
+
+        if self.parameters.enrich and self.configuration.enricher.names:
+            try:
+                context = await self._enrich_instruction(context)
+            except _FATAL_ERRORS as exception:
+                raise RunFailedError(exclaim(str(exception))) from exception
+            except Exception as exception:
+                log.log_enrichment_failed(
+                    model=self.configuration.enricher.names[0],
+                    error=str(exception),
+                )
+            self._active_context = context
+            self._active_task = context.task
+
+        previous_synthesis: str = ""
+        for round_num in range(1, self.parameters.num_rounds + 1):
+            self._progress.on_round_start(round_num, self.parameters.num_rounds)
+            result = await self._run_round(round_num, previous_synthesis)
+
+            if result is not None:
+                # Round succeeded: reset failure counter and update synthesis
+                context.consecutive_round_failures = 0
+                previous_synthesis = result.synthesis_text
+                context.synthesis_history.append(previous_synthesis)
+
+                if (
+                    self.parameters.early_stop
+                    and round_num < self.parameters.num_rounds
+                    and result.reviews is not None
+                    and self._should_stop_early(result.reviews, self.parameters.early_stop_threshold)
+                ):
+                    remaining = self.parameters.num_rounds - round_num
+                    log.log_early_stop(
+                        round=round_num,
+                        remaining_rounds=remaining,
+                        reason="no_weaknesses",
+                    )
+                    self._progress.on_run_end()
+                    break
+            else:
+                # Round failed: increment failure counter and check if we should abort
+                context.consecutive_round_failures += 1
+                if context.consecutive_round_failures >= MAX_CONSECUTIVE_ROUND_FAILURES:
+                    start_round = round_num - context.consecutive_round_failures + 1
+                    raise RunFailedError(
+                        exclaim(
+                            f"Giving up: {context.consecutive_round_failures} consecutive "
+                            f"round failures ({start_round}-{round_num}). "
+                            "The models are having a bad day."
+                        )
+                    )
+        else:
+            # When the loop completes without an early stop
+            self._progress.on_run_end()
+
+        if not previous_synthesis.strip():
+            context.branch = replace(context.branch, state=BranchState.BRANCH_FAILED)
+            return context
+
+        context.branch = replace(context.branch, state=BranchState.SYNTHESIZED)
+        if self._active_archive:
+            if len(self.language.branches) > 1:
+                self._active_archive.save_branch_output(previous_synthesis)
+            else:
+                self._active_archive.save_final_synthesis(previous_synthesis)
+        return context
+
     # -- enrichment pre-step ---
 
-    async def _enrich_instruction(self) -> RunParameters:
-        """Rewrites the task instruction through a lightweight enrichment model, returning updated parameters."""
+    async def _enrich_instruction(self, context: BranchContext) -> BranchContext:
+        """Rewrites this branch's instruction through the enrichment model and returns the updated context."""
         model = self.configuration.enricher.names[0]
         system, user = build_enrichment_prompt(
             mode=self.parameters.mode,
-            instruction=self.parameters.task.instruction,
-            context=self.parameters.task.context,
+            instruction=context.task.instruction,
+            context=context.task.context,
         )
 
         self._progress.on_phase_start(
@@ -395,7 +467,7 @@ class Orchestrator:
             candidate_indices=[None],
             wire_model_ids=[self._wire_model_id(model)],
         )
-        original_tokens = estimate_tokens(self.parameters.task.instruction)
+        original_tokens = estimate_tokens(context.task.instruction)
         enriched = await self._call_llm(
             model=model,
             system_prompt=system,
@@ -414,13 +486,21 @@ class Orchestrator:
             enriched_tokens=enriched_tokens,
         )
 
-        if self._archive:
-            self._archive.save_enriched(enriched)
+        if self._active_archive:
+            self._active_archive.save_enriched(enriched)
 
-        return replace(
-            self.parameters,
-            task=Task(instruction=enriched, context=self.parameters.task.context),
+        context.branch = replace(
+            context.branch,
+            enriched_text=enriched,
+            enriched_hash=sha256_text(enriched),
+            state=BranchState.ENRICHED,
         )
+        context.task = Task(
+            instruction=enriched,
+            context=context.task.context,
+            language=context.task.language,
+        )
+        return context
 
     # -- early stopping ---
 
@@ -680,11 +760,11 @@ class Orchestrator:
         previous_synthesis: str,
     ) -> Candidate:
         """Builds a prompt for one generator, calls the LLM, and handles any search request."""
-        prior_search = self._last_generator_search.get(index, "")
+        prior_search = self._active_context.search_cache.get(index, "")
         system, user = build_generator_prompt(
             mode=self.parameters.mode,
-            instruction=self.parameters.task.instruction,
-            context=self.parameters.task.context,
+            instruction=self._active_task.instruction,
+            context=self._active_task.context,
             previous_synthesis=previous_synthesis,
             round_num=round_num,
             search_results=prior_search,
@@ -699,8 +779,8 @@ class Orchestrator:
             compressible_parts.append((previous_synthesis, "candidate_truncation"))
         if prior_search:
             compressible_parts.append((prior_search, "search_truncation"))
-        if self.parameters.task.context:
-            compressible_parts.append((self.parameters.task.context, "context_truncation"))
+        if self._active_task.context:
+            compressible_parts.append((self._active_task.context, "context_truncation"))
 
         user = self._prepare_prompt(
             system_prompt=system,
@@ -733,7 +813,7 @@ class Orchestrator:
             round_num=round_num,
         )
         if search_results:
-            self._last_generator_search[index] = search_results
+            self._active_context.search_cache[index] = search_results
 
         return Candidate(
             text=text,
@@ -859,7 +939,7 @@ class Orchestrator:
         """Runs one review, and upon failure, attempts a replacement reviewer."""
         system, user_raw = build_reviewer_prompt(
             mode=self.parameters.mode,
-            instruction=self.parameters.task.instruction,
+            instruction=self._active_task.instruction,
             candidate=candidate,
             search_results=candidate.search_results,
             search_enabled=self.configuration.search.enabled,
@@ -1013,7 +1093,7 @@ class Orchestrator:
         """Builds the synthesis prompt, calls the LLM, and parses the decision."""
         system, user = build_synthesizer_prompt(
             mode=self.parameters.mode,
-            instruction=self.parameters.task.instruction,
+            instruction=self._active_task.instruction,
             candidates=candidates,
             reviews=reviews,
         )
@@ -1134,7 +1214,7 @@ class Orchestrator:
         results: str = await perform_search(
             query,
             dry_run=self.parameters.dry_run,
-            instruction=self.parameters.task.instruction,
+            instruction=self._active_task.instruction,
             mode=self.parameters.mode.value,
             role=role,
             model=model,
@@ -1214,7 +1294,7 @@ class Orchestrator:
         """
         if self.parameters.dry_run:
             return simulate_response(
-                instruction=self.parameters.task.instruction,
+                instruction=self._active_task.instruction,
                 mode=self.parameters.mode.value,
                 phase=ROLE_TO_PHASE[role],
                 role=role,

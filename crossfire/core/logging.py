@@ -8,7 +8,7 @@ import sys
 import time
 from typing import Any
 
-from crossfire.core.domain import Phase, Role
+from crossfire.core.domain import BranchState, Phase, Role
 
 _LOGGER_NAME = "crossfire"
 _logger: logging.Logger | None = None
@@ -182,6 +182,10 @@ def log_prompt_enriched(*, model: str, original_tokens: int, enriched_tokens: in
         original_tokens=original_tokens,
         enriched_tokens=enriched_tokens,
     )
+
+
+def log_branch_excluded(*, branch: str, reason: BranchState) -> None:
+    _emit("branch_excluded", level=logging.WARNING, branch=branch, reason=str(reason))
 
 
 def log_translation_failed(*, branch: str, model: str, error: str) -> None:

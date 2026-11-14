@@ -56,14 +56,24 @@ def two_branch_configuration(
     )
 
 
-def orchestrator_for(instruction: str, archive_base: Path, *, num_rounds: int = 1) -> Orchestrator:
+def orchestrator_for(
+    instruction: str,
+    archive_base: Path,
+    *,
+    num_rounds: int = 1,
+    source: str = "en",
+    branches: tuple[str, ...] = ("en", "de"),
+) -> Orchestrator:
     """Builds an orchestrator over *num_rounds* rounds, ready to call models through the fake transport."""
     parameters = RunParameters(
         mode=Mode.RESEARCH,
         task=Task(instruction=instruction),
+        num_generators=1,
+        num_reviewers_per_candidate=1,
         num_rounds=num_rounds,
     )
-    orchestrator = Orchestrator(two_branch_configuration(), parameters, archive=RunArchive(archive_base))
+    configuration = two_branch_configuration(source=source, branches=branches)
+    orchestrator = Orchestrator(configuration, parameters, archive=RunArchive(archive_base))
     orchestrator._api_key = "offline-test-key"
     orchestrator._http_client = httpx.AsyncClient()
     return orchestrator
