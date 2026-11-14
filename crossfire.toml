@@ -251,7 +251,7 @@ max_output_tokens = 32000
 #   render_language = "en"      # the reader's language; omit for no render
 #   translate_instruction = true
 #   adjudicate = true
-#   translator_backend = "llm"  # llm or deepl
+#   translator_backend = "llm"  # llm is the only backend this build drives; deepl fails validation
 #
 #   [language.modes.research]   # same keys, merged over [language]
 #   preset = "multilingual"
