@@ -58,6 +58,7 @@ class TestAdjudication:
         instruction = "Explain the Nanjing death toll with sources."
         english_answer = "## Answer\n\nThe toll was 200,000 or more [1]."
         german_answer = "## Antwort\n\nDie Zahl der Toten ist in den Quellen umstritten."
+        fake_transport.default("generator", "reviewer")
         fake_transport.queue("translator", "Erklären Sie die Opferzahl von Nanjing anhand von Quellen.")
         fake_transport.queue("synthesizer", english_answer, german_answer)
         source_id = EvidenceRegistry().add(instruction, origin="source").id

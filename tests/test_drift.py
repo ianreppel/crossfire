@@ -23,6 +23,8 @@ from crossfire.core.domain import DEFAULT_PROVIDER_CONFIGURATIONS, _model_target
 from crossfire.core.privacy import _RETENTION_MODELS, _TRAINING_MODELS
 from crossfire.core.providers import Protocol, resolve_protocol
 
+pytestmark = pytest.mark.network
+
 _DOCS_URLS = {
     "zen": "https://opencode.ai/docs/zen/",
     "go": "https://opencode.ai/docs/go/",

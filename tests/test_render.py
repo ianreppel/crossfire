@@ -18,6 +18,7 @@ GERMAN_ANSWER = "## Antwort\n\nDie Zahl der Toten ist in den Quellen umstritten.
 
 async def run_two_branch_adjudication(fake_transport: FakeTransport, tmp_path: Path, **kwargs) -> None:
     """Runs two branches whose syntheses disagree, with one adjudicated claim that cites the source span."""
+    fake_transport.default("generator", "reviewer")
     fake_transport.queue("translator", "Erklären Sie die Opferzahl von Nanjing anhand von Quellen.")
     fake_transport.queue("synthesizer", ENGLISH_ANSWER, GERMAN_ANSWER)
     source_id = EvidenceRegistry().add(INSTRUCTION, origin="source").id

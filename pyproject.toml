@@ -63,3 +63,4 @@ skip_empty = true
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = ["network: needs live vendor pages; run with -m network, excluded from the offline suite"]

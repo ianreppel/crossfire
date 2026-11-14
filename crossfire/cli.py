@@ -208,7 +208,8 @@ def run(
         language_cli["translate_instruction"] = False
     if no_adjudicate:
         language_cli["adjudicate"] = False
-    if language_cli.get("source") == "auto":
+    configured_source = configuration.language.source
+    if language_cli.get("source", configured_source) == "auto":
         try:
             language_cli["source"] = resolve_source_language("auto", effective_instruction)
         except LanguageDetectionError as exception:

@@ -38,6 +38,11 @@ class FidelityError(ValueError):
         super().__init__("; ".join(violations))
 
 
+def _digit_runs(text: str) -> str:
+    """Returns the digits of *text* in order, dropping the separators a language may spell them with."""
+    return "".join(character for character in text if character.isdigit())
+
+
 def _placeholder(index: int) -> str:
     """Returns the placeholder token for the *index*-th protected span."""
     return PLACEHOLDER_TEMPLATE.format(n=index)
@@ -105,9 +110,13 @@ def fidelity_violations(source: str, translated: str, spans: tuple[ProtectedSpan
                 f"{span.text[:80]!r}"
             )
     stripped = restore_do_not_translate(translated, spans)
+    stripped_digits = _digit_runs(stripped)
     for numeral in dict.fromkeys(_NUMERAL_REGEX.findall(source)):
-        if numeral not in stripped:
-            violations.append(f"the numeral {numeral!r} is not byte-identical in the translation")
+        if _digit_runs(numeral) not in stripped_digits:
+            violations.append(
+                f"the numeral {numeral!r} does not survive in the translation; "
+                "the digits must appear in the same order, in any separator style the target language uses"
+            )
     return violations
 
 

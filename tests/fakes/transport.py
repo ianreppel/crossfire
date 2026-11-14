@@ -44,10 +44,16 @@ class FakeTransport:
     _queues: dict[str, list[str]] = field(default_factory=lambda: defaultdict(list))
     _defaults: dict[str, str] = field(default_factory=dict)
     _allowed_roles: set[str] | None = None
+    identity_translator: bool = True
 
     def queue(self, role: str, *texts: str) -> None:
         """Queues replies for *role*, consumed in order before any default reply."""
         self._queues[role].extend(texts)
+
+    def default(self, *roles: str) -> None:
+        """Opts *roles* into the canned default reply once their queue is empty."""
+        for role in roles:
+            self._defaults[role] = _DEFAULT_RESPONSES[role]
 
     def allow(self, *roles: str) -> None:
         """Restricts the fake to *roles*; a request for any other role raises."""
@@ -88,12 +94,14 @@ class FakeTransport:
         queue = self._queues.get(role)
         if queue:
             return queue.pop(0)
-        if role == "translator":
+        if role == "translator" and self.identity_translator:
             return _identity_translation(user_prompt)
-        try:
-            return _DEFAULT_RESPONSES[role]
-        except KeyError as exception:
-            raise UnexpectedRequestError(f"Unexpected {role} request with no queued reply.") from exception
+        if role in self._defaults:
+            return self._defaults[role]
+        raise UnexpectedRequestError(
+            f"Unexpected {role} request with no queued reply. Queue one, or set "
+            "identity_translator=True on the transport when the test means to accept an identity translation."
+        )
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         """Answers one provider call in the protocol the URL asks for."""

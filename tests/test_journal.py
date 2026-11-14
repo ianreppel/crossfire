@@ -39,6 +39,7 @@ class TestResume:
         self, fake_transport: FakeTransport, tmp_path: Path
     ) -> None:
         instruction = "Explain the Nanjing death toll with sources."
+        fake_transport.default("generator", "reviewer", "synthesizer", "adjudicator")
         first = orchestrator_for(instruction, tmp_path, num_rounds=2, branches=("en", "de"))
         await first.run()
         settled = (
@@ -65,6 +66,7 @@ class TestResume:
     ) -> None:
         """A kill between two units leaves a torn artefact; the hash rule redoes exactly that round."""
         instruction = "Explain the Nanjing death toll with sources."
+        fake_transport.default("generator", "reviewer", "synthesizer", "adjudicator")
         first = orchestrator_for(instruction, tmp_path, num_rounds=3, branches=("en", "de"))
         await first.run()
         settled = fake_transport.count("generator")

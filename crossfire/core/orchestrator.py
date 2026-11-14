@@ -355,9 +355,6 @@ class Orchestrator:
                     continue
                 contexts.append(await self._run_branch(self._prepare_branch_context(translated)))
 
-            cost = self.cost_tracker.summarize()
-            log.log_cost_summary(cost)
-
             synthesised = [context for context in contexts if context.branch.state is BranchState.SYNTHESIZED]
             if not synthesised:
                 raise RunFailedError(
@@ -387,6 +384,9 @@ class Orchestrator:
                     result = await self._render_output(verdicts, synthesised)
                     if self._archive:
                         self._archive.save_render(self.language.render_language, result)
+
+            cost = self.cost_tracker.summarize()
+            log.log_cost_summary(cost)
 
             if self._archive:
                 if len(branches) > 1:

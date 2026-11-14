@@ -44,6 +44,7 @@ class TestBranchPipeline:
         english_instruction = "What were the comfort women, and how has Japan's official position changed?"
         korean_answer = "## 답변\n\n위안부 제도에는 일본 군대가 관여했다 [1].\n"
         english_answer = "## Answer\n\nThe Japanese military was involved in the comfort women system [1].\n"
+        fake_transport.default("generator", "reviewer")
         fake_transport.queue("translator", english_instruction)
         fake_transport.queue("synthesizer", korean_answer, english_answer)
         orchestrator = orchestrator_for(instruction, tmp_path, source=row["lang"], branches=("ko", "en"))

@@ -18,6 +18,7 @@ def test_cli_run_writes_two_branches_an_adjudication_and_a_render(
     tmp_path: Path,
 ) -> None:
     run_dir = tmp_path / "run"
+    fake_transport.default("generator", "reviewer")
     fake_transport.queue("translator", "Erklären Sie die Opferzahl von Nanjing anhand von Quellen.")
     fake_transport.queue(
         "synthesizer",
