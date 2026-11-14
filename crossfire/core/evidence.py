@@ -8,8 +8,9 @@ the branch synthesis it was taken from, is invalid: the comparison says so rathe
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import replace
 
-from crossfire.core.domain import CrossBranchVerdict, EvidenceSpan
+from crossfire.core.domain import CrossBranchVerdict, EvidenceSpan, VerdictState
 from crossfire.core.hashing import sha256_text
 
 # Where a span came from: the instruction, the user context, or a citation a branch produced.
@@ -67,3 +68,23 @@ class EvidenceRegistry:
                     f"evidence span {span_id} does not appear verbatim in the {span.branch} synthesis"
                 )
         return violations
+
+
+def apply_evidence_rules(
+    verdict: CrossBranchVerdict,
+    registry: EvidenceRegistry,
+    branch_texts: Mapping[str, str],
+) -> tuple[CrossBranchVerdict, list[str]]:
+    """Returns *verdict* after the evidence rules, with the violations that were found.
+
+    A verdict built on an id the registry cannot resolve becomes ``no_evidence`` and its violations are returned. An
+    ``agrees`` with no evidence at all is ``no_evidence`` too: agreement without a stored span is a coincidence of two
+    renderings, not a finding. Disagreement and absence need no evidence to be published, because those states say the
+    branches do not line up and that is worth printing as it stands.
+    """
+    violations = registry.validate_verdict(verdict, branch_texts)
+    if violations:
+        return replace(verdict, state=VerdictState.NO_EVIDENCE), violations
+    if verdict.state is VerdictState.AGREES and not verdict.evidence_ids:
+        return replace(verdict, state=VerdictState.NO_EVIDENCE), []
+    return verdict, []

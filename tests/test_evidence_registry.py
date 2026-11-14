@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from crossfire.core.domain import CrossBranchVerdict, VerdictState
-from crossfire.core.evidence import EvidenceRegistry
+from crossfire.core.evidence import EvidenceRegistry, apply_evidence_rules
 
 
 class TestEvidenceRegistry:
@@ -35,3 +35,30 @@ class TestEvidenceRegistry:
             evidence_ids=[span.id],
         )
         assert registry.validate_verdict(known_only, branch_texts={"en": branch_text}) == []
+
+    def test_agreement_without_evidence_is_no_evidence(self) -> None:
+        registry = EvidenceRegistry()
+        agreement = CrossBranchVerdict(
+            claim="the death toll",
+            state=VerdictState.AGREES,
+            by_branch={"en": "200,000 or more [1].", "de": "200,000 oder mehr [1]."},
+        )
+
+        normalized, violations = apply_evidence_rules(agreement, registry, branch_texts={})
+
+        assert violations == []
+        assert normalized.state is VerdictState.NO_EVIDENCE, "agreement without evidence is not agreement"
+
+        disagreement = CrossBranchVerdict(
+            claim="the death toll",
+            state=VerdictState.DISAGREES,
+            by_branch={"en": "200,000 or more [1].", "de": "Die Zahl ist umstritten."},
+        )
+        assert apply_evidence_rules(disagreement, registry, branch_texts={})[0].state is VerdictState.DISAGREES
+
+        absent = CrossBranchVerdict(
+            claim="the death toll",
+            state=VerdictState.ABSENT_IN_BRANCH,
+            by_branch={"en": "200,000 or more [1].", "de": ""},
+        )
+        assert apply_evidence_rules(absent, registry, branch_texts={})[0].state is VerdictState.ABSENT_IN_BRANCH
