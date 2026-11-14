@@ -375,6 +375,7 @@ class BranchContext:
     synthesis_history: list[str] = field(default_factory=list)
     search_cache: dict[int, str] = field(default_factory=dict)
     consecutive_round_failures: int = 0
+    partial: bool = False
 
     @property
     def language(self) -> str:

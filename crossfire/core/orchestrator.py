@@ -170,7 +170,7 @@ class Orchestrator:
         self._active_archive: RunArchive | None = archive
         # On --resume the journal decides which units are already done: a unit counts only while its artefact hash
         # still matches the file on disk.
-        self._journal_records: list[dict[str, Any]] = archive.journal.replay() if archive and parameters.resume else []
+        self._journal_records: list[dict[str, Any]] = []
 
     # -- language surface ---
 
@@ -333,6 +333,8 @@ class Orchestrator:
         try:
             if self._archive:
                 self._archive.claim_owner(adopt_stale=self.parameters.resume)
+                if self.parameters.resume:
+                    self._journal_records = self._archive.journal.replay()
                 self._archive.save_original_instruction(original_instruction)
                 self._archive.journal.append(
                     "run_started",
@@ -370,6 +372,7 @@ class Orchestrator:
                 self._archive.journal.append(
                     "run_shape",
                     shape=shape,
+                    status="PARTIAL" if shape == "partial" else "COMPLETE",
                     synthesised=[context.branch.language for context in synthesised],
                 )
 
@@ -396,6 +399,7 @@ class Orchestrator:
                     replace(self.parameters, task=primary.task),
                     cost,
                     language=self._language_manifest(),
+                    status="PARTIAL" if shape == "partial" else "COMPLETE",
                 )
                 if self._searches_performed:
                     self._archive.save_searches(self._searches_performed)
@@ -416,6 +420,9 @@ class Orchestrator:
         Claims are packed into packets under the adjudicator's context window and one call is made per packet. A packet
         that fails twice leaves the run ``adjudication_incomplete``: the branch outputs still publish, and the missing
         packet is named, because a comparison that did not happen is not a clean comparison.
+        Invalid evidence deterministically raises ``RunFailedError`` before publication and records every violation.
+        Missing claims receive explicit unavailable records and ``no_evidence`` verdicts.
+        Covered packets resume only while both their request and reply hashes match.
         """
         syntheses = {context.branch.language: context.synthesis_history[-1] for context in contexts}
         claims: list[Claim] = extract_claims(syntheses)
@@ -436,19 +443,30 @@ class Orchestrator:
         incomplete: list[int] = []
         for index, packet in enumerate(packets, start=1):
             system, user = build_cross_branch_adjudicator_prompt(packet, syntheses, registry.spans())
+            request_sha256 = sha256_text(
+                json.dumps([self.configuration.provider, self._wire_model_id(model), model, system, user])
+            )
+            resumed = self._completed_adjudication_packet(index, request_sha256)
             parsed: list[CrossBranchVerdict] | None = None
+            text = ""
             error = ""
             for _attempt in range(2):
                 try:
-                    text = await self._call_llm(
-                        model=model,
-                        system_prompt=system,
-                        user_prompt=user,
-                        role=Role.ADJUDICATOR,
-                        round_num=0,
-                        max_retries=0,
+                    text = (
+                        resumed
+                        if resumed is not None
+                        else await self._call_llm(
+                            model=model,
+                            system_prompt=system,
+                            user_prompt=user,
+                            role=Role.ADJUDICATOR,
+                            round_num=0,
+                            max_retries=0,
+                        )
                     )
-                    parse_control_envelope(text)
+                    envelope = parse_control_envelope(text)
+                    if envelope.kind != "adjudication":
+                        raise EnvelopeError("An adjudication packet requires an adjudication envelope.")
                     parsed = parse_cross_branch_verdicts(text)
                 except _FATAL_ERRORS:
                     raise
@@ -456,15 +474,44 @@ class Orchestrator:
                     error = str(exception)
                     continue
                 break
-            if parsed is None:
-                incomplete.append(index)
-                log.log_adjudication_incomplete(packet=index, error=error)
-                continue
-            for verdict in parsed:
-                normalised, _violations = apply_evidence_rules(verdict, registry, syntheses)
+            packet_verdicts = parsed or []
+            covered = {verdict.claim for verdict in packet_verdicts}
+            missing = [claim for claim in packet if claim.key not in covered]
+            for verdict in packet_verdicts:
+                normalised, violations = apply_evidence_rules(verdict, registry, syntheses)
+                if violations:
+                    log.log_evidence_invalid(packet=index, claim=verdict.claim, violations=violations)
+                    if self._archive:
+                        self._archive.journal.append(
+                            "evidence_invalid", packet=index, claim=verdict.claim, violations=violations
+                        )
+                    raise RunFailedError("Publication refused: " + "; ".join(violations))
                 normalised.packet = index
                 normalised.adjudicator = model
                 verdicts.append(normalised)
+            if parsed is None or missing:
+                incomplete.append(index)
+                error = error or "No verdict for claims: " + ", ".join(claim.key for claim in missing)
+                log.log_adjudication_incomplete(packet=index, error=error)
+                if self._archive:
+                    self._archive.journal.append(
+                        "adjudication_packet_unavailable",
+                        packet=index,
+                        claims=[claim.key for claim in missing],
+                        error=error,
+                    )
+                verdicts.extend(
+                    CrossBranchVerdict(
+                        claim=claim.key,
+                        state=VerdictState.NO_EVIDENCE,
+                        by_branch=dict(claim.by_branch),
+                        adjudicator=model,
+                        packet=index,
+                    )
+                    for claim in missing
+                )
+            elif self._archive and resumed is None:
+                self._archive.save_adjudication_packet(index, text, request_sha256)
 
         unavailable = sum(1 for verdict in verdicts if verdict.state is not VerdictState.AGREES)
         log.log_adjudication(packets=len(packets), verdicts=len(verdicts), unavailable=unavailable)
@@ -600,6 +647,15 @@ class Orchestrator:
                 return self._journal_artefact_matches(record)
         return None
 
+    def _completed_adjudication_packet(self, index: int, request_sha256: str) -> str | None:
+        """Returns a covered packet whose request and archived reply still match the journal."""
+        for record in reversed(self._journal_records):
+            if record.get("event") == "adjudication_packet_completed" and record.get("packet") == index:
+                if record.get("request_sha256") != request_sha256:
+                    return None
+                return self._journal_artefact_matches(record)
+        return None
+
     def _resumed_instruction(self, branch: Branch) -> Branch | None:
         """Returns *branch* with its attested translation restored from the journal, or ``None``."""
         if branch.instruction_text or not self._journal_records:
@@ -622,13 +678,13 @@ class Orchestrator:
     def _run_shape(synthesised: list[BranchContext], branches: list[Branch]) -> str:
         """Returns the run's shape: ``full``, ``partial`` or ``single-branch``.
 
-        Fewer than two syntheses means there is nothing to compare, so the run says so instead of pretending to
-        adjudicate. A branch that failed after a usable synthesis leaves the run partial and is named.
+        A failed branch or unfinished round loop makes the run partial, including a single branch with usable output.
+        A complete run with one configured branch is single-branch.
         """
+        if any(context.partial for context in synthesised) or len(synthesised) < len(branches):
+            return "partial"
         if len(synthesised) < 2:
             return "single-branch"
-        if len(synthesised) < len(branches):
-            return "partial"
         return "full"
 
     def _primary_context(self, contexts: list[BranchContext]) -> BranchContext:
@@ -682,6 +738,7 @@ class Orchestrator:
 
         Enrichment runs per branch, on the branch's own instruction. A branch that produces no synthesis is marked
         ``branch_failed`` and left out of the reconciliation rather than aborting the other branches.
+        Consecutive failures preserve usable output as partial and abort only a single branch with no usable output.
         """
         self._active_context = context
         self._active_task = context.task
@@ -740,9 +797,12 @@ class Orchestrator:
                     self._progress.on_run_end()
                     break
             else:
-                # Round failed: increment failure counter and check if we should abort
+                # Consecutive failures end this branch while preserving its last usable synthesis.
                 context.consecutive_round_failures += 1
                 if context.consecutive_round_failures >= MAX_CONSECUTIVE_ROUND_FAILURES:
+                    if previous_synthesis.strip() or len(self.language.branches) > 1:
+                        self._progress.on_run_end()
+                        break
                     start_round = round_num - context.consecutive_round_failures + 1
                     raise RunFailedError(
                         exclaim(
@@ -765,12 +825,14 @@ class Orchestrator:
                 )
             return context
 
+        context.partial = context.consecutive_round_failures > 0
         context.branch = replace(context.branch, state=BranchState.SYNTHESIZED)
         if self._active_archive:
             self._active_archive.journal.append(
                 "synthesis",
                 branch=context.branch.language,
                 rounds=len(context.synthesis_history),
+                status="PARTIAL" if context.partial else "COMPLETE",
                 sha256=sha256_text(previous_synthesis),
             )
             if len(self.language.branches) > 1:

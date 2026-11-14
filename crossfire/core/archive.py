@@ -6,14 +6,16 @@ is appended to an fsync'd journal. A write that fails raises: an artefact the ru
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import re
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, TextIO
 
 from crossfire.core import logging as log
 from crossfire.core.domain import (
@@ -102,6 +104,7 @@ class RunArchive:
         self.base = base
         self.journal = journal or RunJournal(base / "journal.jsonl")
         self.prefix = prefix
+        self._owner: RunOwner | None = None
 
     def child(self, *parts: str) -> RunArchive:
         """Returns an archive in a subdirectory that appends to this archive's journal.
@@ -116,37 +119,79 @@ class RunArchive:
         """Returns *rel_path* relative to the run root, which is what the journal records."""
         return f"{self.prefix}/{rel_path}" if self.prefix else rel_path
 
+    @contextmanager
+    def _locked_owner_file(self) -> Iterator[TextIO]:
+        """Serializes ownership changes on the current pid file, retrying if a release removed it."""
+        owner_path = self.base / "owner.json"
+        self.base.mkdir(parents=True, exist_ok=True)
+        while True:
+            with open(owner_path, "a+", encoding="utf-8") as handle:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+                try:
+                    current = owner_path.stat()
+                except FileNotFoundError:
+                    continue
+                opened = os.fstat(handle.fileno())
+                if (current.st_dev, current.st_ino) != (opened.st_dev, opened.st_ino):
+                    continue
+                handle.seek(0)
+                yield handle
+                return
+
     def claim_owner(self, *, adopt_stale: bool = False) -> RunOwner:
         """Claims the run directory for this process.
 
         A second writer is refused while the recorded owner is alive, because two processes appending one journal would
-        interleave. A stale owner (a killed run) is adopted only when the caller asks, which is what ``--resume`` does.
+        interleave.
+        Resume adopts only a stale pid, and ownership changes are serialized by a file lock.
         """
-        owner_path = self.base / "owner.json"
         owner = RunOwner(pid=os.getpid(), started_at=datetime.now(UTC).isoformat(timespec="seconds"))
-        if owner_path.is_file():
-            recorded = json.loads(owner_path.read_text(encoding="utf-8"))
-            recorded_pid = int(recorded.get("pid", 0) or 0)
-            if recorded_pid and recorded_pid != owner.pid:
+        with self._locked_owner_file() as handle:
+            content = handle.read()
+            if content:
+                recorded = json.loads(content)
+                recorded_pid = int(recorded.get("pid", 0) or 0)
+                if (
+                    self._owner is not None
+                    and self._owner.pid == owner.pid
+                    and recorded
+                    == {
+                        "pid": self._owner.pid,
+                        "started_at": self._owner.started_at,
+                    }
+                ):
+                    return self._owner
                 alive = _process_is_alive(recorded_pid)
-                if alive and not adopt_stale:
+                if alive:
                     raise ArchiveOwnerError(
                         f"Run directory {self.base} is owned by process {recorded_pid}, which is still alive. "
-                        "Use --resume to adopt it, or pick another --run-dir."
+                        "Wait for it to exit, or pick another --run-dir."
                     )
+                if not adopt_stale:
+                    raise ArchiveOwnerError(f"Run directory {self.base} has a stale owner. Use --resume to adopt it.")
                 self.journal.append(
                     "owner_adopted",
                     previous_pid=recorded_pid,
                     pid=owner.pid,
                     previous_alive=alive,
                 )
-        owner_path.parent.mkdir(parents=True, exist_ok=True)
-        owner_path.write_text(json.dumps({"pid": owner.pid, "started_at": owner.started_at}), encoding="utf-8")
+            handle.seek(0)
+            handle.truncate()
+            handle.write(json.dumps({"pid": owner.pid, "started_at": owner.started_at}))
+            handle.flush()
+            os.fsync(handle.fileno())
+            self._owner = owner
         return owner
 
     def release_owner(self) -> None:
         """Releases the run directory, so a later run may claim it without ``--resume``."""
-        (self.base / "owner.json").unlink(missing_ok=True)
+        if self._owner is None or self._owner.pid != os.getpid():
+            return
+        with self._locked_owner_file() as handle:
+            content = handle.read()
+            if content and json.loads(content) == {"pid": self._owner.pid, "started_at": self._owner.started_at}:
+                (self.base / "owner.json").unlink(missing_ok=True)
+        self._owner = None
 
     def _write(self, rel_path: str, content: str) -> str:
         """Writes *content* atomically, journals its hash, and returns the hash.
@@ -226,6 +271,18 @@ class RunArchive:
     def save_cross_branch(self, text: str) -> None:
         self._write("cross-branch.md", text)
 
+    def save_adjudication_packet(self, index: int, text: str, request_sha256: str) -> None:
+        """Saves a covered packet and journals the request and reply hashes for resume."""
+        path = f"adjudication/packet-{index}.txt"
+        digest = self._write(path, text)
+        self.journal.append(
+            "adjudication_packet_completed",
+            packet=index,
+            path=self.record_path(path),
+            sha256=digest,
+            request_sha256=request_sha256,
+        )
+
     def save_final_synthesis(self, text: str) -> None:
         self._write("final.md", text)
 
@@ -235,6 +292,7 @@ class RunArchive:
         parameters: RunParameters,
         cost: dict[str, Any],
         language: dict[str, Any] | None = None,
+        status: str = "COMPLETE",
     ) -> None:
         meta = {
             "mode": parameters.mode.value,
@@ -247,6 +305,7 @@ class RunArchive:
             "early_stop": parameters.early_stop,
             "early_stop_threshold": parameters.early_stop_threshold,
             "cost": cost,
+            "status": status,
         }
         if language is not None:
             meta["language"] = language

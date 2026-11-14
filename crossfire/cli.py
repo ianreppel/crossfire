@@ -6,6 +6,7 @@ import asyncio
 import logging as _logging
 import shutil
 import sys
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -16,6 +17,7 @@ from crossfire.core.archive import RunArchive
 from crossfire.core.config import load_configuration
 from crossfire.core.detection import LanguageDetectionError, resolve_source_language
 from crossfire.core.domain import CostEstimate, CrossfireConfiguration, Mode, RunParameters, Task
+from crossfire.core.language import resolve_language
 from crossfire.core.logging import set_stderr_level
 from crossfire.core.orchestrator import Orchestrator, RunFailedError
 from crossfire.core.pricing import (
@@ -247,11 +249,9 @@ def run(
             click.echo(f"Configuration error: {exception}", err=True)
             sys.exit(1)
 
-    cost_estimate: CostEstimate | None = None
-    if parameters.dry_run:
-        cost_estimate = _try_estimate_cost(configuration, parameters)
-        if cost_estimate is not None and verbose:
-            _print_cost_estimate(cost_estimate)
+    cost_estimate = _try_estimate_cost(configuration, parameters)
+    if cost_estimate is not None and (verbose or not parameters.dry_run):
+        _print_cost_estimate(cost_estimate)
 
     archive_path: Path = Path(run_dir or f"runs/{datetime.now().strftime('%Y-%m-%dT%H-%M-%S')}")
 
@@ -365,7 +365,12 @@ def _try_estimate_cost(
     except (ValueError, OSError) as exception:
         click.echo(f"Could not load {PRICING_FILENAME}: {exception}", err=True)
         return None
-    return estimate_cost(configuration, parameters, pricing, fetched_at)
+    language, _provenance = resolve_language(
+        cli=parameters.language_cli,
+        mode_override=configuration.language_modes.get(parameters.mode.value),
+        global_=Orchestrator._global_language_layer(configuration),
+    )
+    return estimate_cost(replace(configuration, language=language), parameters, pricing, fetched_at)
 
 
 async def _execute(
@@ -401,7 +406,7 @@ def _print_cost_estimate(cost_estimate: CostEstimate) -> None:
     """Prints the per-branch estimate and the total to stderr before launch."""
     for branch, branch_cost in cost_estimate.per_branch:
         click.echo(f"Estimated cost for branch {branch}: ${branch_cost:.2f}", err=True)
-    click.echo(f"Estimated cost: ${cost_estimate.total_usd:.2f}", err=True)
+    click.echo(f"Estimated cost (upper bound for configured rounds): ${cost_estimate.total_usd:.2f}", err=True)
     if cost_estimate.missing_models:
         click.echo(f"Unpriced models: {', '.join(cost_estimate.missing_models)}", err=True)
     if cost_estimate.fetched_at:

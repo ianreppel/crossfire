@@ -187,7 +187,13 @@ def log_prompt_enriched(*, model: str, original_tokens: int, enriched_tokens: in
 
 
 def log_run_shape(*, shape: str, branches: int, synthesised: int) -> None:
-    _emit("run_shape", shape=shape, branches=branches, synthesised=synthesised)
+    _emit(
+        "run_shape",
+        shape=shape,
+        branches=branches,
+        synthesised=synthesised,
+        status="PARTIAL" if shape == "partial" else "COMPLETE",
+    )
 
 
 def log_language_resolved(*, language: dict[str, Any]) -> None:
@@ -200,6 +206,10 @@ def log_adjudication(*, packets: int, verdicts: int, unavailable: int) -> None:
 
 def log_adjudication_incomplete(*, packet: int, error: str) -> None:
     _emit("adjudication_incomplete", level=logging.WARNING, packet=packet, error=error)
+
+
+def log_evidence_invalid(*, packet: int, claim: str, violations: list[str]) -> None:
+    _emit("evidence_invalid", level=logging.ERROR, packet=packet, claim=claim, violations=violations)
 
 
 def log_round_resumed(*, branch: str, round: int) -> None:
