@@ -34,11 +34,12 @@ from crossfire.core.exclamations import exclaim
 from crossfire.core.pricing import PRICING_FILENAME, load_pricing
 from crossfire.core.progress import NoOpProgress, ProgressCallback
 from crossfire.core.prompts import (
+    EnvelopeError,
     build_enrichment_prompt,
     build_generator_prompt,
     build_reviewer_prompt,
     build_synthesizer_prompt,
-    parse_review_verdict,
+    parse_control_envelope,
     parse_synthesis_decision,
     strip_synthesis_decision,
 )
@@ -290,18 +291,24 @@ class Orchestrator:
 
     @staticmethod
     def _should_stop_early(reviews: list[Review], threshold: int = 1) -> bool:
-        """Returns True if reviews indicate no material weaknesses remain.
+        """Returns True only when every review carries a valid control envelope reporting no material defect.
 
-        When SEVERITY is missing, falls back to counting weakness items against a *threshold*.
-        An empty review list never triggers early stop: if nobody looked, we can't claim approval.
+        A review's prose may be written in any language, so the loop never reads a verdict out of it. A missing or
+        malformed envelope is ``envelope_invalid``: never clean, and early stop is forbidden for that round. An empty
+        review list never triggers early stop either: if nobody looked, we cannot claim approval.
         """
         if not reviews:
             return False
         for review in reviews:
-            verdict = parse_review_verdict(review.text)
-            if verdict.severity == "material":
+            try:
+                envelope = parse_control_envelope(review.text)
+            except EnvelopeError:
                 return False
-            if not verdict.severity and len(verdict.weaknesses) > threshold:
+            if envelope.kind != "verdict":
+                return False
+            if envelope.severity == "material":
+                return False
+            if envelope.weaknesses > threshold:
                 return False
         return True
 
@@ -347,6 +354,18 @@ class Orchestrator:
         if self._archive:
             for review in reviews:
                 self._archive.save_review(review)
+
+        # A review without a valid envelope cannot be read as approval, so the round records it and carries on.
+        for review in reviews:
+            try:
+                parse_control_envelope(review.text)
+            except EnvelopeError as exception:
+                log.log_envelope_invalid(
+                    round=round_num,
+                    role=Role.REVIEWER,
+                    model=review.model,
+                    reason=str(exception),
+                )
 
         reviewed_candidates = {review.candidate_index for review in reviews}
         if self.parameters.num_reviewers_per_candidate > 0 and len(reviewed_candidates) < len(candidates):

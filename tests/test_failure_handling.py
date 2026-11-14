@@ -354,8 +354,17 @@ class TestShouldStopEarly:
         assert Orchestrator._should_stop_early([review]) is False
 
     def test_weaknesses_below_threshold_stops(self):
-        review = Review(text="STRENGTHS: solid", model="rev-a", round=1, candidate_index=0)
+        review = Review(
+            text='STRENGTHS: solid\nCROSSFIRE-VERDICT {"severity": "nitpick", "weaknesses": 1}',
+            model="rev-a",
+            round=1,
+            candidate_index=0,
+        )
         assert Orchestrator._should_stop_early([review], threshold=1) is True
+
+    def test_review_without_envelope_never_stops(self):
+        review = Review(text="STRENGTHS: solid", model="rev-a", round=1, candidate_index=0)
+        assert Orchestrator._should_stop_early([review], threshold=1) is False
 
 
 class TestSynthesisRegression:

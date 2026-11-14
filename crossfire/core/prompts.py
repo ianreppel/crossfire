@@ -84,7 +84,10 @@ _REVIEWER_STRUCTURED_SUFFIX = (
     "\n\nEnd with a structured summary on separate lines:\n"
     "STRENGTHS: <comma-separated list>\n"
     "WEAKNESSES: <comma-separated list>\n"
-    "SEVERITY: material (factual errors, logic flaws, broken code) | nitpick (style only) | none"
+    "SEVERITY: material (factual errors, logic flaws, broken code) | nitpick (style only) | none\n"
+    'CROSSFIRE-VERDICT {"severity": "material|nitpick|none", "weaknesses": <integer>}\n'
+    "The last line is that JSON line exactly: ASCII keys, ASCII enum values, and a whole number of weaknesses. "
+    "The prose above it may be in any language; the envelope is never translated."
 )
 
 _REVIEWER_SYSTEM: dict[Mode, str] = {
@@ -301,6 +304,74 @@ def parse_review_verdict(text: str) -> ReviewVerdict:
         if match:
             verdict.severity = match.group(1).lower()
     return verdict
+
+
+_CONTROL_ENVELOPE_REGEX = re.compile(r"^CROSSFIRE-(VERDICT|ADJUDICATION)\s+(\{.*\})\s*$")
+_VERDICT_SEVERITIES: frozenset[str] = frozenset({"material", "nitpick", "none"})
+
+
+class EnvelopeError(ValueError):
+    """Raised when a machine-readable control envelope is missing or malformed."""
+
+
+@dataclass(frozen=True)
+class ControlEnvelope:
+    """Parsed control envelope: a fixed ASCII line that ends a reviewer or adjudicator reply.
+
+    The prose may be in any language, so the loop never reads a verdict out of it. Only this line decides whether a
+    round may stop early, and an absent or invalid line is never treated as approval.
+    """
+
+    kind: str
+    severity: str = ""
+    weaknesses: int = 0
+    claims: int = 0
+    unavailable: int = 0
+
+
+def _parse_envelope_payload(kind: str, payload: str) -> ControlEnvelope:
+    """Validates one envelope payload against its closed schema."""
+    try:
+        data = json.loads(payload)
+    except json.JSONDecodeError as exception:
+        raise EnvelopeError(f"Malformed CROSSFIRE-{kind} envelope: the payload is not JSON.") from exception
+    if not isinstance(data, dict):
+        raise EnvelopeError(f"Malformed CROSSFIRE-{kind} envelope: the payload is not a JSON object.")
+
+    if kind == "VERDICT":
+        severity = data.get("severity")
+        weaknesses = data.get("weaknesses")
+        if severity not in _VERDICT_SEVERITIES:
+            raise EnvelopeError(
+                f"Malformed CROSSFIRE-VERDICT envelope: severity must be one of "
+                f"{', '.join(sorted(_VERDICT_SEVERITIES))}, got {severity!r}."
+            )
+        if not isinstance(weaknesses, int) or isinstance(weaknesses, bool) or weaknesses < 0:
+            raise EnvelopeError("Malformed CROSSFIRE-VERDICT envelope: weaknesses must be a non-negative integer.")
+        return ControlEnvelope(kind="verdict", severity=str(severity), weaknesses=weaknesses)
+
+    claims = data.get("claims")
+    unavailable = data.get("unavailable")
+    for name, value in (("claims", claims), ("unavailable", unavailable)):
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            raise EnvelopeError(f"Malformed CROSSFIRE-ADJUDICATION envelope: {name} must be a non-negative integer.")
+    return ControlEnvelope(kind="adjudication", claims=claims, unavailable=unavailable)
+
+
+def parse_control_envelope(text: str) -> ControlEnvelope:
+    """Parses the last control envelope in *text*.
+
+    Raises :class:`EnvelopeError` when no envelope is present or the last one is malformed. The loop treats both as
+    ``envelope_invalid``: never clean, and early stop is forbidden for that round.
+    """
+    envelope: ControlEnvelope | None = None
+    for line in text.split("\n"):
+        match = _CONTROL_ENVELOPE_REGEX.match(line.strip())
+        if match:
+            envelope = _parse_envelope_payload(match.group(1), match.group(2))
+    if envelope is None:
+        raise EnvelopeError("No CROSSFIRE-VERDICT or CROSSFIRE-ADJUDICATION envelope found.")
+    return envelope
 
 
 def _build_review_triage(

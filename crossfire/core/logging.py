@@ -184,6 +184,10 @@ def log_prompt_enriched(*, model: str, original_tokens: int, enriched_tokens: in
     )
 
 
+def log_envelope_invalid(*, round: int, role: Role, model: str, reason: str) -> None:
+    _emit("envelope_invalid", level=logging.WARNING, round=round, role=role, model=model, reason=reason)
+
+
 def log_early_stop(*, round: int, remaining_rounds: int, reason: str) -> None:
     _emit("early_stop", round=round, remaining_rounds=remaining_rounds, reason=reason)
 
