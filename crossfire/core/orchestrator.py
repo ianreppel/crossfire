@@ -367,6 +367,15 @@ class Orchestrator:
                     )
                 )
 
+            shape = self._run_shape(synthesised, branches)
+            log.log_run_shape(shape=shape, branches=len(branches), synthesised=len(synthesised))
+            if self._archive:
+                self._archive.journal.append(
+                    "run_shape",
+                    shape=shape,
+                    synthesised=[context.branch.language for context in synthesised],
+                )
+
             primary = self._primary_context(synthesised)
             result: str = primary.synthesis_history[-1]
 
@@ -607,6 +616,19 @@ class Orchestrator:
                     state=BranchState.TRANSLATED,
                 )
         return None
+
+    @staticmethod
+    def _run_shape(synthesised: list[BranchContext], branches: list[Branch]) -> str:
+        """Returns the run's shape: ``full``, ``partial`` or ``single-branch``.
+
+        Fewer than two syntheses means there is nothing to compare, so the run says so instead of pretending to
+        adjudicate. A branch that failed after a usable synthesis leaves the run partial and is named.
+        """
+        if len(synthesised) < 2:
+            return "single-branch"
+        if len(synthesised) < len(branches):
+            return "partial"
+        return "full"
 
     def _primary_context(self, contexts: list[BranchContext]) -> BranchContext:
         """Returns the branch whose synthesis is the run's own output: the source branch when it survived."""

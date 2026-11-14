@@ -184,6 +184,10 @@ def log_prompt_enriched(*, model: str, original_tokens: int, enriched_tokens: in
     )
 
 
+def log_run_shape(*, shape: str, branches: int, synthesised: int) -> None:
+    _emit("run_shape", shape=shape, branches=branches, synthesised=synthesised)
+
+
 def log_language_resolved(*, language: dict[str, Any]) -> None:
     _emit("language_resolved", **language)
 
