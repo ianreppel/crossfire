@@ -92,3 +92,24 @@ def resolve_language(
     provenance: dict[str, str] = {field: supplied.get(field, "default") for field in _LANGUAGE_FIELDS}
     provenance["branches"] = branch_layer
     return configuration, provenance
+
+
+def validate_language(configuration: LanguageConfiguration) -> list[str]:
+    """Returns the language configuration errors that must stop a run before any model call.
+
+    An empty or duplicated branch list is an operator error: a branch multiplies the whole loop, so the list is
+    validated once, up front, rather than discovered mid-run.
+    """
+    errors: list[str] = []
+    branches = configuration.branches
+    if not branches:
+        errors.append("language.branches must name at least one language")
+    seen: set[str] = set()
+    duplicates: list[str] = []
+    for branch in branches:
+        if branch in seen and branch not in duplicates:
+            duplicates.append(branch)
+        seen.add(branch)
+    if duplicates:
+        errors.append(f"language.branches has duplicate languages: {', '.join(duplicates)}")
+    return errors

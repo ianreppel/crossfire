@@ -6,7 +6,7 @@ from pathlib import Path
 
 from crossfire.core.config import load_configuration
 from crossfire.core.domain import LanguageConfiguration
-from crossfire.core.language import resolve_language
+from crossfire.core.language import resolve_language, validate_language
 from crossfire.core.presets import LANGUAGE_PRESETS
 
 
@@ -73,3 +73,11 @@ class TestLanguageConfiguration:
         assert resolved.preset == "multilingual"
         assert provenance["branches"] == "mode"
         assert provenance["source"] == "global"
+
+
+class TestLanguageValidation:
+    def test_duplicate_branch_is_a_config_error(self) -> None:
+        errors = validate_language(LanguageConfiguration(branches=("en", "de", "en")))
+
+        assert any("duplicate" in error.lower() for error in errors), errors
+        assert validate_language(LanguageConfiguration(branches=("en", "de"))) == []
