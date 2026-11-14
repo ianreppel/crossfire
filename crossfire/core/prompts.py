@@ -361,17 +361,17 @@ def _parse_envelope_payload(kind: str, payload: str) -> ControlEnvelope:
 def parse_control_envelope(text: str) -> ControlEnvelope:
     """Parses the last control envelope in *text*.
 
-    Raises :class:`EnvelopeError` when no envelope is present or the last one is malformed. The loop treats both as
-    ``envelope_invalid``: never clean, and early stop is forbidden for that round.
+    The envelope must be the last non-empty line. An envelope followed by more prose is a quotation, not a verdict, and
+    the model may still deny it in the text after it. Raises :class:`EnvelopeError` when the trailer is absent or
+    malformed; the loop treats both as ``envelope_invalid``: never clean, and early stop is forbidden for that round.
     """
-    envelope: ControlEnvelope | None = None
-    for line in text.split("\n"):
-        match = _CONTROL_ENVELOPE_REGEX.match(line.strip())
-        if match:
-            envelope = _parse_envelope_payload(match.group(1), match.group(2))
-    if envelope is None:
+    lines = [line.strip() for line in text.split("\n") if line.strip()]
+    if not lines:
         raise EnvelopeError("No CROSSFIRE-VERDICT or CROSSFIRE-ADJUDICATION envelope found.")
-    return envelope
+    match = _CONTROL_ENVELOPE_REGEX.match(lines[-1])
+    if match is None:
+        raise EnvelopeError("No CROSSFIRE-VERDICT or CROSSFIRE-ADJUDICATION envelope on the final line.")
+    return _parse_envelope_payload(match.group(1), match.group(2))
 
 
 def _build_review_triage(

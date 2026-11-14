@@ -84,11 +84,12 @@ def simulate_response(
             "",
             f"STRENGTHS: good structure ({digest[8:12]}), clear citations ({digest[12:16]})",
             f"WEAKNESSES: missing evidence for claim {digest[16:20]}, redundancy in section {digest[20:24]}",
-            # The loop reads this line, not the prose: two weaknesses keep a dry run above the default threshold.
-            'CROSSFIRE-VERDICT {"severity": "nitpick", "weaknesses": 2}',
         ]
         if emit_search:
             sections.append(f'{{"crossfire_search": {{"query": "verify claim {digest[24:32]}"}}}}')
+        # The loop reads this line, not the prose, and it must be the final line: two weaknesses keep a dry run above
+        # the default early-stop threshold.
+        sections.append('CROSSFIRE-VERDICT {"severity": "nitpick", "weaknesses": 2}')
     else:  # synthesizer
         per_cand = [
             f'{{"index": 0, "kept": ["merged content ({digest[8:12]})"], "discarded": []}}',
