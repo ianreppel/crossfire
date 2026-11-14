@@ -86,3 +86,18 @@ class TestInstructionTranslation:
         translate_prompt = fake_transport.texts("translator")[0]
         assert translate_prompt.startswith("[TRANSLATE en->de]")
         assert instruction in translate_prompt
+
+    @pytest.mark.asyncio
+    async def test_translation_refusal_marks_branch_translation_failed(
+        self, fake_transport: FakeTransport, tmp_path: Path
+    ) -> None:
+        fake_transport.queue("translator", "")
+        orchestrator = orchestrator_for("Explain the Nanjing death toll with sources.", tmp_path)
+
+        branch = await orchestrator._translate_instruction(orchestrator._build_branches(orchestrator.configuration)[1])
+
+        assert branch.state is BranchState.TRANSLATION_FAILED
+        assert branch.instruction_text == ""
+        assert branch.instruction_model == ""
+        assert fake_transport.count("translator") == 1
+        assert not (tmp_path / "branches" / "de" / "instruction.md").exists()

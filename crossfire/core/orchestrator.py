@@ -212,15 +212,30 @@ class Orchestrator:
 
         model = self.configuration.translator.names[0]
         system, user = build_translation_prompt(f"{self.language.source}->{branch.language}", original)
-        text = await self._call_llm(
-            model=model,
-            system_prompt=system,
-            user_prompt=user,
-            role=Role.TRANSLATOR,
-            round_num=0,
-            max_retries=0,
-        )
+        try:
+            text = await self._call_llm(
+                model=model,
+                system_prompt=system,
+                user_prompt=user,
+                role=Role.TRANSLATOR,
+                round_num=0,
+                max_retries=0,
+            )
+        except _FATAL_ERRORS:
+            raise
+        except Exception as exception:
+            # A refusal, a truncation or an empty reply excludes this branch and lets the run continue.
+            log.log_translation_failed(branch=branch.language, model=model, error=str(exception))
+            return replace(branch, state=BranchState.TRANSLATION_FAILED)
+
         translated = text.strip()
+        if not translated:
+            log.log_translation_failed(
+                branch=branch.language,
+                model=model,
+                error="the translator returned an empty instruction",
+            )
+            return replace(branch, state=BranchState.TRANSLATION_FAILED)
         if self._archive:
             self._archive.save_branch_instruction(branch.language, translated)
         return replace(

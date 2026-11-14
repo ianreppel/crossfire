@@ -184,6 +184,10 @@ def log_prompt_enriched(*, model: str, original_tokens: int, enriched_tokens: in
     )
 
 
+def log_translation_failed(*, branch: str, model: str, error: str) -> None:
+    _emit("translation_failed", level=logging.WARNING, branch=branch, model=model, error=error)
+
+
 def log_envelope_invalid(*, round: int, role: Role, model: str, reason: str) -> None:
     _emit("envelope_invalid", level=logging.WARNING, round=round, role=role, model=model, reason=reason)
 
