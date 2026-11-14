@@ -14,6 +14,10 @@ from typing import Any
 from crossfire.core.domain import LanguageConfiguration
 from crossfire.core.presets import UnknownPresetError, expand_preset
 
+# Translation backends this build can drive. DeepL is named in the configuration surface but is not implemented here,
+# so configuring it fails before any call rather than silently translating with the LLM backend.
+TRANSLATOR_BACKENDS: tuple[str, ...] = ("llm",)
+
 # A BCP-47 language tag: a two- or three-letter primary subtag, then optional alphanumeric subtags.
 _LANGUAGE_TAG_REGEX: re.Pattern[str] = re.compile(r"^[A-Za-z]{2,3}(-[A-Za-z0-9]{1,8})*$")
 
@@ -129,6 +133,12 @@ def validate_language(configuration: LanguageConfiguration) -> list[str]:
 
     # The source language is deliberately independent of the branch list: a Portuguese question may run one English
     # branch and render back to Portuguese. The competence branch is not, because it must name a branch that exists.
+    if configuration.translator_backend not in TRANSLATOR_BACKENDS:
+        errors.append(
+            f"language.translator_backend '{configuration.translator_backend}' is not implemented. "
+            f"Available backends: {', '.join(TRANSLATOR_BACKENDS)}"
+        )
+
     competence_branch = configuration.competence_branch
     if competence_branch is not None and competence_branch not in branches:
         errors.append(
