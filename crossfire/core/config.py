@@ -18,6 +18,7 @@ from crossfire.core.domain import (
     ProviderConfiguration,
     SearchConfiguration,
 )
+from crossfire.core.presets import UnknownPresetError, expand_preset
 
 DEFAULT_CONFIGURATION_FILENAME = "crossfire.toml"
 
@@ -152,7 +153,7 @@ def _parse_language_section(section: dict[str, Any]) -> LanguageConfiguration:
     preset = section.get("preset")
     competence_branch = section.get("competence_branch")
     render_language = section.get("render_language")
-    return LanguageConfiguration(
+    configuration = LanguageConfiguration(
         source=str(section.get("source", defaults.source)),
         branches=tuple(str(branch) for branch in branches) if branches is not None else defaults.branches,
         preset=str(preset) if preset is not None else defaults.preset,
@@ -162,6 +163,13 @@ def _parse_language_section(section: dict[str, Any]) -> LanguageConfiguration:
         adjudicate=bool(section.get("adjudicate", defaults.adjudicate)),
         translator_backend=str(section.get("translator_backend", defaults.translator_backend)),
     )
+    if configuration.preset is None:
+        return configuration
+    try:
+        return replace(configuration, branches=expand_preset(configuration.preset))
+    except UnknownPresetError:
+        # An unknown preset is a configuration error, reported by language validation before any model call.
+        return configuration
 
 
 def _parse_language_modes(section: dict[str, Any]) -> dict[str, dict[str, Any]]:

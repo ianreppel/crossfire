@@ -6,6 +6,7 @@ from pathlib import Path
 
 from crossfire.core.config import load_configuration
 from crossfire.core.domain import LanguageConfiguration
+from crossfire.core.presets import LANGUAGE_PRESETS
 
 
 def write_configuration(tmp_path: Path, body: str) -> Path:
@@ -39,3 +40,12 @@ class TestLanguageConfiguration:
         assert configuration.language.branches == ("en", "de")
         assert configuration.language.render_language == "pt"
         assert configuration.language_modes["research"]["branches"] == ["en", "de", "ja"]
+
+    def test_preset_multilingual_expands_to_five(self, tmp_path: Path) -> None:
+        path = write_configuration(tmp_path, '[language]\npreset = "multilingual"\n')
+
+        configuration = load_configuration(configuration_path=path)
+
+        assert configuration.language.preset == "multilingual"
+        assert configuration.language.branches == ("en", "zh", "de", "ja", "fr")
+        assert LANGUAGE_PRESETS["multilingual-wide"] == ("en", "zh", "de", "ja", "fr", "es", "hi")
