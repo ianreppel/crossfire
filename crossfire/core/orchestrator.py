@@ -981,7 +981,7 @@ class Orchestrator:
             Phase.GENERATION,
             generator_count,
             models=generator_models,
-            candidate_indices=[None] * generator_count,
+            candidate_indices=cast(list[int | None], [None] * generator_count),
             wire_model_ids=[self._wire_model_id(model) for model in generator_models],
         )
 

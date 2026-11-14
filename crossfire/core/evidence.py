@@ -82,9 +82,7 @@ class EvidenceRegistry:
                 continue
             branch_text = branch_texts.get(span.branch, "")
             if span.branch and branch_text and span.text not in branch_text:
-                violations.append(
-                    f"evidence span {span_id} does not appear verbatim in the {span.branch} synthesis"
-                )
+                violations.append(f"evidence span {span_id} does not appear verbatim in the {span.branch} synthesis")
         return violations
 
 

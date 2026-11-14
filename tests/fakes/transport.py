@@ -184,8 +184,7 @@ _DEFAULT_RESPONSES: dict[str, str] = {
     ),
     "enricher": "## Enriched\n\nExpand the request into a structured brief.\n",
     "adjudicator": (
-        '{"crossfire_adjudication": {"verdicts": []}}\n'
-        'CROSSFIRE-ADJUDICATION {"claims": 0, "unavailable": 0}'
+        '{"crossfire_adjudication": {"verdicts": []}}\nCROSSFIRE-ADJUDICATION {"claims": 0, "unavailable": 0}'
     ),
 }
 

@@ -46,9 +46,9 @@ class TestAdjudication:
         keys = {claim.key: claim for claim in claims}
         shared = [claim for claim in claims if claim.by_branch.get("de")]
         assert shared, "a line both branches write verbatim is one claim with two passages"
-        assert all(
-            claim.text in english or claim.text in german for claim in claims
-        ), "a claim is always some branch's own wording, never a rendering"
+        assert all(claim.text in english or claim.text in german for claim in claims), (
+            "a claim is always some branch's own wording, never a rendering"
+        )
         assert not any(key.startswith("#") for key in keys), "headings are not claims"
 
     @pytest.mark.asyncio
@@ -82,9 +82,7 @@ class TestAdjudication:
         assert fake_transport.count("adjudicator") == 1
         assert claim.text in cross_branch
 
-        evidence = [
-            json.loads(line) for line in (tmp_path / "evidence.jsonl").read_text(encoding="utf-8").splitlines()
-        ]
+        evidence = [json.loads(line) for line in (tmp_path / "evidence.jsonl").read_text(encoding="utf-8").splitlines()]
         stored_ids = {span["id"]: span["sha256"] for span in evidence}
         assert source_id in stored_ids, "the source span is in the registry, with its hash"
         assert stored_ids[source_id]

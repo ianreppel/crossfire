@@ -363,6 +363,7 @@ def _parse_envelope_payload(kind: str, payload: str) -> ControlEnvelope:
     for name, value in (("claims", claims), ("unavailable", unavailable)):
         if not isinstance(value, int) or isinstance(value, bool) or value < 0:
             raise EnvelopeError(f"Malformed CROSSFIRE-ADJUDICATION envelope: {name} must be a non-negative integer.")
+    assert isinstance(claims, int) and isinstance(unavailable, int)
     return ControlEnvelope(kind="adjudication", claims=claims, unavailable=unavailable)
 
 
@@ -660,8 +661,7 @@ def build_language_tag(language: str) -> str:
     passage a reviewer or an adjudicator judged.
     """
     return (
-        f"\n\nRespond in {language}. Quote evidence verbatim in the language it appears; "
-        "never translate a quotation."
+        f"\n\nRespond in {language}. Quote evidence verbatim in the language it appears; never translate a quotation."
     )
 
 

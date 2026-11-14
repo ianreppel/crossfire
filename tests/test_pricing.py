@@ -590,6 +590,7 @@ class TestEstimateCost:
         with pytest.raises(AttributeError):
             estimate.total_usd = 0.0  # type: ignore[misc]
 
+
 class TestBranchEstimate:
     def test_estimate_scales_with_branch_count(
         self,

@@ -32,10 +32,7 @@ def simulate_response(
 
     if role == "adjudicator":
         # A dry run cannot judge, so it returns an empty comparison with a valid envelope rather than a fake verdict.
-        return (
-            '{"crossfire_adjudication": {"verdicts": []}}\n'
-            'CROSSFIRE-ADJUDICATION {"claims": 0, "unavailable": 0}'
-        )
+        return '{"crossfire_adjudication": {"verdicts": []}}\nCROSSFIRE-ADJUDICATION {"claims": 0, "unavailable": 0}'
 
     if role == "translator":
         # A simulated translation is the text it was given: deterministic, and honest about carrying no new content.

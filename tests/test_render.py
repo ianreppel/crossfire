@@ -49,7 +49,6 @@ class TestRender:
         assert render != ENGLISH_ANSWER, "a render is not one branch's synthesis"
         assert render != GERMAN_ANSWER
 
-
     @pytest.mark.asyncio
     async def test_render_is_marked_non_attested_and_leaves_outputs_intact(
         self, fake_transport: FakeTransport, tmp_path: Path

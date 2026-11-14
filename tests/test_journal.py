@@ -35,9 +35,7 @@ class TestJournal:
 
 class TestResume:
     @pytest.mark.asyncio
-    async def test_resume_skips_hash_matched_rounds(
-        self, fake_transport: FakeTransport, tmp_path: Path
-    ) -> None:
+    async def test_resume_skips_hash_matched_rounds(self, fake_transport: FakeTransport, tmp_path: Path) -> None:
         instruction = "Explain the Nanjing death toll with sources."
         fake_transport.default("generator", "reviewer", "synthesizer", "adjudicator")
         first = orchestrator_for(instruction, tmp_path, num_rounds=2, branches=("en", "de"))

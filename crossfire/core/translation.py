@@ -9,6 +9,7 @@ quietly replacing a citation.
 from __future__ import annotations
 
 import re
+from collections import Counter
 from dataclasses import dataclass
 
 # A token a translator has no reason to translate; the renderer swaps the original text back in.
@@ -19,7 +20,7 @@ _REFERENCE_LINE_REGEX = re.compile(r"^\s*\[\d+\]\s+\S.*\S")
 _URL_REGEX = re.compile(r"https?://\S+|www\.\S+")
 _DOI_REGEX = re.compile(r"\b10\.\d{4,9}/[^\s\"<>,;]+")
 _ISBN_REGEX = re.compile(r"\b(?:ISBN(?:-1[03])?:?\s*)?(?:97[89][-\s]?)?\d{1,5}[-\s]?\d{1,7}[-\s]?\d{1,7}[-\s]?[\dXx]\b")
-_NUMERAL_REGEX = re.compile(r"\d+(?:[.,:/]\d+)*")
+_NUMERAL_REGEX = re.compile(r"\d{1,3}(?:[.,:/ \u00a0\u202f]\d{3})+(?:[.,]\d+)?|\d+(?:[.,:/]\d+)*")
 
 
 @dataclass(frozen=True)
@@ -38,9 +39,22 @@ class FidelityError(ValueError):
         super().__init__("; ".join(violations))
 
 
-def _digit_runs(text: str) -> str:
-    """Returns the digits of *text* in order, dropping the separators a language may spell them with."""
-    return "".join(character for character in text if character.isdigit())
+def _normalize_numeral(token: str) -> tuple[str, bool]:
+    """Returns one numeral as its digits plus whether it carries a fraction, so separator style never decides.
+
+    Every grouping style the target language uses (comma, period, slash, colon, space, no-break space, narrow no-break
+    space) is dropped, so 300,000, 300.000 and 300 000 compare equal, while a different number, a merged pair or a
+    reordered pair does not. A trailing group of one or two digits marks a fraction, which keeps 1.5 and 15 apart.
+    """
+    parts = re.split(r"[.,:/ \u00a0\u202f]", token)
+    digits = "".join(part for part in parts if part.isdigit())
+    has_fraction = len(parts) > 1 and 1 <= len(parts[-1]) <= 2
+    return digits, has_fraction
+
+
+def _numerals(text: str) -> list[tuple[str, bool]]:
+    """Returns every numeral in *text* as canonical values, in reading order."""
+    return [_normalize_numeral(token) for token in _NUMERAL_REGEX.findall(text)]
 
 
 def _placeholder(index: int) -> str:
@@ -110,12 +124,16 @@ def fidelity_violations(source: str, translated: str, spans: tuple[ProtectedSpan
                 f"{span.text[:80]!r}"
             )
     stripped = restore_do_not_translate(translated, spans)
-    stripped_digits = _digit_runs(stripped)
-    for numeral in dict.fromkeys(_NUMERAL_REGEX.findall(source)):
-        if _digit_runs(numeral) not in stripped_digits:
+    wanted = Counter(_numerals(source))
+    found = Counter(_numerals(stripped))
+    for (digits, has_fraction), count in wanted.items():
+        if found[(digits, has_fraction)] < count:
+            spelling = next(
+                token for token in _NUMERAL_REGEX.findall(source) if _normalize_numeral(token) == (digits, has_fraction)
+            )
             violations.append(
-                f"the numeral {numeral!r} does not survive in the translation; "
-                "the digits must appear in the same order, in any separator style the target language uses"
+                f"the numeral {spelling!r} appears {found[(digits, has_fraction)]} times, expected at least {count}; "
+                "the value must survive in the target language, in any separator style, and no numeral may be dropped"
             )
     return violations
 

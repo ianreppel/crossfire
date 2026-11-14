@@ -22,11 +22,13 @@ class _JsonFormatter(logging.Formatter):
             "ts": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(record.created)),
             "level": record.levelname,
         }
-        if hasattr(record, "event"):
-            payload["event"] = record.event
-        if hasattr(record, "data"):
-            payload.update(record.data)
-        if not hasattr(record, "event"):
+        event = getattr(record, "event", None)
+        if event is not None:
+            payload["event"] = event
+        extra = getattr(record, "data", None)
+        if isinstance(extra, dict):
+            payload.update(extra)
+        if event is None:
             payload["message"] = record.getMessage()
         return json.dumps(payload, default=str)
 

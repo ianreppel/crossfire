@@ -14,9 +14,7 @@ from tests.helpers import orchestrator_for
 
 class TestInstructionTranslation:
     @pytest.mark.asyncio
-    async def test_source_branch_spends_no_translation(
-        self, fake_transport: FakeTransport, tmp_path: Path
-    ) -> None:
+    async def test_source_branch_spends_no_translation(self, fake_transport: FakeTransport, tmp_path: Path) -> None:
         instruction = "Explain the Nanjing death toll with sources."
         orchestrator = orchestrator_for(instruction, tmp_path)
 

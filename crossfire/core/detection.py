@@ -31,6 +31,7 @@ _SCRIPT_RANGES: tuple[tuple[str, tuple[tuple[int, int], ...]], ...] = (
 
 _WORD_REGEX = re.compile(r"[^\W\d_]+", re.UNICODE)
 
+
 def _words(text: str) -> frozenset[str]:
     """Splits a whitespace-separated word list into a set, keeping accented forms intact."""
     return frozenset(text.split())
@@ -115,8 +116,7 @@ def _stopword_scores(text: str) -> dict[str, float]:
         return {}
     total = float(len(words))
     return {
-        language: sum(1 for word in words if word in stopwords) / total
-        for language, stopwords in _STOPWORDS.items()
+        language: sum(1 for word in words if word in stopwords) / total for language, stopwords in _STOPWORDS.items()
     }
 
 
