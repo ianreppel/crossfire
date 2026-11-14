@@ -18,6 +18,7 @@ from crossfire.core.compression import compress_prompt_components
 from crossfire.core.config import get_api_key
 from crossfire.core.domain import (
     Branch,
+    BranchContext,
     BranchState,
     Candidate,
     CostEntry,
@@ -200,6 +201,19 @@ class Orchestrator:
                 branch = replace(branch, instruction_text=original, instruction_hash=sha256_text(original))
             branches.append(branch)
         return branches
+
+    def _prepare_branch_context(self, branch: Branch) -> BranchContext:
+        """Returns a fresh context for *branch*, built from the immutable original task.
+
+        The instruction is the branch's own (translated or original) and the context is the user's, unchanged. The
+        search cache and the failure counter start empty: a branch never inherits another branch's state.
+        """
+        task = Task(
+            instruction=branch.instruction_text or self.parameters.task.instruction,
+            context=self.parameters.task.context,
+            language=branch.language,
+        )
+        return BranchContext(branch=branch, task=task)
 
     async def _translate_instruction(self, branch: Branch) -> Branch:
         """Returns *branch* with its instruction ready for enrichment.

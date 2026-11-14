@@ -359,6 +359,26 @@ class CrossBranchVerdict:
     packet: int = 0
 
 
+@dataclass
+class BranchContext:
+    """Everything one branch owns: its task, synthesis history, search cache and failure counter.
+
+    Built fresh for every branch from the immutable original task. Nothing is inherited, so one branch's searches,
+    syntheses or failures can never colour another branch's run.
+    """
+
+    branch: Branch
+    task: Task
+    synthesis_history: list[str] = field(default_factory=list)
+    search_cache: dict[int, str] = field(default_factory=dict)
+    consecutive_round_failures: int = 0
+
+    @property
+    def language(self) -> str:
+        """Returns the branch's language tag."""
+        return self.branch.language
+
+
 @dataclass(frozen=True)
 class LanguageConfiguration:
     """Language surface for a run: one branch per language, plus the source and render languages.
