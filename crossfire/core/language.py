@@ -55,9 +55,11 @@ def resolve_language(
 
     merged: dict[str, Any] = {}
     supplied: dict[str, str] = {}
-    # Lowest precedence first, so the highest layer overwrites the rest.
+    # Lowest precedence first, so the highest layer overwrites the rest. An explicit None means "not set here".
     for layer_name, layer in reversed(layers):
         for key, value in (layer or {}).items():
+            if value is None:
+                continue
             merged[key] = value
             supplied[key] = layer_name
 
@@ -69,12 +71,16 @@ def resolve_language(
     # so a global branch list cannot silently defeat a mode-level preset.
     for layer_name, layer in layers:
         data = layer or {}
+        if data.get("branches") and data.get("preset") is not None:
+            raise ValueError(
+                f"language.{layer_name} sets both branches and preset, which are mutually exclusive. Keep one."
+            )
         if "branches" in data:
             branches = tuple(str(branch) for branch in data["branches"])
             preset = None
             branch_layer = layer_name
             break
-        if "preset" in data:
+        if data.get("preset") is not None:
             preset = str(data["preset"])
             branches = _expanded(preset, defaults.branches)
             branch_layer = layer_name

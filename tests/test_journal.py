@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from crossfire.core.archive import ArchiveWriteError, RunArchive
+from crossfire.core.archive import ArchiveOwnerError, ArchiveWriteError, RunArchive
 from crossfire.core.hashing import sha256_text
 from tests.fakes.transport import FakeTransport
 from tests.helpers import orchestrator_for
@@ -77,3 +77,22 @@ class TestResume:
 
         assert fake_transport.count("generator") - settled == 1, "only the torn round is re-run, for one branch"
         assert torn.read_text(encoding="utf-8") != "half a synthesis"
+
+
+class TestOwner:
+    def test_a_second_writer_is_refused_and_a_stale_owner_is_adopted(self, tmp_path: Path) -> None:
+        archive = RunArchive(tmp_path)
+        archive.claim_owner()
+        archive.claim_owner()  # the same process may claim its own run again
+
+        # Process 1 is alive on any Linux box, so a second writer is refused.
+        (tmp_path / "owner.json").write_text('{"pid": 1, "started_at": "2026-11-14T00:00:00+00:00"}')
+        with pytest.raises(ArchiveOwnerError):
+            RunArchive(tmp_path).claim_owner()
+
+        # A killed run leaves a dead pid behind, and --resume adopts it.
+        (tmp_path / "owner.json").write_text('{"pid": 999999, "started_at": "2026-11-14T00:00:00+00:00"}')
+        adopted = RunArchive(tmp_path).claim_owner(adopt_stale=True)
+
+        assert adopted.pid > 0
+        assert "owner_adopted" in [record["event"] for record in archive.journal.replay()]

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from crossfire.core.config import load_configuration
 from crossfire.core.domain import LanguageConfiguration
 from crossfire.core.language import resolve_language, validate_language
@@ -94,3 +96,9 @@ class TestLanguageValidation:
         assert any("competence_branch" in error for error in errors), errors
         assert validate_language(LanguageConfiguration(branches=("en", "de"), competence_branch="de")) == []
         assert validate_language(LanguageConfiguration(branches=("en",), source="pt")) == []
+
+    def test_preset_and_branches_are_mutually_exclusive(self, tmp_path: Path) -> None:
+        path = write_configuration(tmp_path, '[language]\npreset = "multilingual"\nbranches = ["en"]\n')
+
+        with pytest.raises(ValueError, match="mutually exclusive"):
+            load_configuration(configuration_path=path)

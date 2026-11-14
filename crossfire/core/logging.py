@@ -184,6 +184,10 @@ def log_prompt_enriched(*, model: str, original_tokens: int, enriched_tokens: in
     )
 
 
+def log_language_resolved(*, language: dict[str, Any]) -> None:
+    _emit("language_resolved", **language)
+
+
 def log_adjudication(*, packets: int, verdicts: int, unavailable: int) -> None:
     _emit("adjudicated", packets=packets, verdicts=verdicts, unavailable=unavailable)
 

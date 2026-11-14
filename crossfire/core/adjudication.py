@@ -125,7 +125,8 @@ def render_cross_branch(
     lines.append(f"Claims compared: {len(verdicts)}.")
     if incomplete:
         named = ", ".join(str(index) for index in incomplete)
-        lines.append(f"Incomplete packets: {named}. The run is adjudication_incomplete.")
+        lines.append(f"Incomplete packets: {named}.")
+        lines.append("The run is adjudication_incomplete.")
     for verdict in verdicts:
         lines.extend(["", f"## {verdict.claim}", "", f"State: {verdict.state.value}."])
         for branch, passage in verdict.by_branch.items():

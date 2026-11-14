@@ -448,6 +448,7 @@ def build_generator_prompt(
     round_num: int = 1,
     search_results: str = "",
     search_enabled: bool = False,
+    language_tag: str = "",
 ) -> tuple[str, str]:
     rules_text = rules or MODE_RULES[mode]
     system = _GENERATOR_SYSTEM[mode]
@@ -468,6 +469,9 @@ def build_generator_prompt(
     if search_enabled:
         parts.append(_SEARCH_INSTRUCTION)
 
+    if language_tag:
+        parts.append(language_tag)
+
     user = "".join(parts)
     return system, user
 
@@ -480,6 +484,7 @@ def build_reviewer_prompt(
     rules: str | None = None,
     search_results: str = "",
     search_enabled: bool = False,
+    language_tag: str = "",
 ) -> tuple[str, str]:
     rules_text = rules or MODE_RULES[mode]
     system = _REVIEWER_SYSTEM[mode]
@@ -506,6 +511,7 @@ def build_synthesizer_prompt(
     candidates: list[Candidate],
     reviews: list[Review],
     rules: str | None = None,
+    language_tag: str = "",
 ) -> tuple[str, str]:
     rules_text = rules or MODE_RULES[mode]
     # The attribution block is essential. Fable refuses it (a safety-classifier false positive on
@@ -528,6 +534,9 @@ def build_synthesizer_prompt(
 
     for review in reviews:
         parts.append(f"\n[REVIEW for candidate {review.candidate_index} by {review.model}]\n{review.text}")
+
+    if language_tag:
+        parts.append(language_tag)
 
     user = "".join(parts)
     return system, user
@@ -642,6 +651,18 @@ def parse_cross_branch_verdicts(text: str) -> list[CrossBranchVerdict]:
             )
         )
     return verdicts
+
+
+def build_language_tag(language: str) -> str:
+    """Returns the response-language instruction for a branch answering in *language*.
+
+    Evidence is quoted in the language it appears in. A quotation is never translated, because a rendering is not the
+    passage a reviewer or an adjudicator judged.
+    """
+    return (
+        f"\n\nRespond in {language}. Quote evidence verbatim in the language it appears; "
+        "never translate a quotation."
+    )
 
 
 _TRANSLATOR_SYSTEM = (

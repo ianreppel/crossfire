@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -79,3 +80,12 @@ class TestAdjudication:
         assert source_id in cross_branch
         assert fake_transport.count("adjudicator") == 1
         assert claim.text in cross_branch
+
+        evidence = [
+            json.loads(line) for line in (tmp_path / "evidence.jsonl").read_text(encoding="utf-8").splitlines()
+        ]
+        stored_ids = {span["id"]: span["sha256"] for span in evidence}
+        assert source_id in stored_ids, "the source span is in the registry, with its hash"
+        assert stored_ids[source_id]
+        manifest = json.loads((tmp_path / "meta.json").read_text(encoding="utf-8"))
+        assert manifest["language"]["branches"] == ["en", "de"]

@@ -9,11 +9,21 @@ from __future__ import annotations
 import json
 import os
 import re
+from collections.abc import Sequence
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from crossfire.core import logging as log
-from crossfire.core.domain import Candidate, Review, RunParameters, SynthesisResult, strip_provider_pin
+from crossfire.core.domain import (
+    Candidate,
+    EvidenceSpan,
+    Review,
+    RunParameters,
+    SynthesisResult,
+    strip_provider_pin,
+)
 from crossfire.core.hashing import sha256_text
 
 _UNSAFE_FILENAME_CHARS_REGEX = re.compile(r"[^A-Za-z0-9._-]")
@@ -26,6 +36,29 @@ def _sanitize_model_name(model: str) -> str:
 
 class ArchiveWriteError(RuntimeError):
     """Raised when an artefact or a journal line cannot be written."""
+
+
+class ArchiveOwnerError(RuntimeError):
+    """Raised when another live process already owns the run directory."""
+
+
+@dataclass(frozen=True)
+class RunOwner:
+    """The process that owns a run directory, so two writers never interleave one run's journal."""
+
+    pid: int
+    started_at: str
+
+
+def _process_is_alive(pid: int) -> bool:
+    """Returns True when a process with *pid* exists and this user may signal it."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
 
 
 class RunJournal:
@@ -82,6 +115,38 @@ class RunArchive:
     def record_path(self, rel_path: str) -> str:
         """Returns *rel_path* relative to the run root, which is what the journal records."""
         return f"{self.prefix}/{rel_path}" if self.prefix else rel_path
+
+    def claim_owner(self, *, adopt_stale: bool = False) -> RunOwner:
+        """Claims the run directory for this process.
+
+        A second writer is refused while the recorded owner is alive, because two processes appending one journal would
+        interleave. A stale owner (a killed run) is adopted only when the caller asks, which is what ``--resume`` does.
+        """
+        owner_path = self.base / "owner.json"
+        owner = RunOwner(pid=os.getpid(), started_at=datetime.now(UTC).isoformat(timespec="seconds"))
+        if owner_path.is_file():
+            recorded = json.loads(owner_path.read_text(encoding="utf-8"))
+            recorded_pid = int(recorded.get("pid", 0) or 0)
+            if recorded_pid and recorded_pid != owner.pid:
+                alive = _process_is_alive(recorded_pid)
+                if alive and not adopt_stale:
+                    raise ArchiveOwnerError(
+                        f"Run directory {self.base} is owned by process {recorded_pid}, which is still alive. "
+                        "Use --resume to adopt it, or pick another --run-dir."
+                    )
+                self.journal.append(
+                    "owner_adopted",
+                    previous_pid=recorded_pid,
+                    pid=owner.pid,
+                    previous_alive=alive,
+                )
+        owner_path.parent.mkdir(parents=True, exist_ok=True)
+        owner_path.write_text(json.dumps({"pid": owner.pid, "started_at": owner.started_at}), encoding="utf-8")
+        return owner
+
+    def release_owner(self) -> None:
+        """Releases the run directory, so a later run may claim it without ``--resume``."""
+        (self.base / "owner.json").unlink(missing_ok=True)
 
     def _write(self, rel_path: str, content: str) -> str:
         """Writes *content* atomically, journals its hash, and returns the hash.
@@ -141,13 +206,36 @@ class RunArchive:
     def save_render(self, language: str, text: str) -> None:
         self._write(f"render/{language}.md", text)
 
+    def save_evidence(self, spans: Sequence[EvidenceSpan]) -> None:
+        lines = [
+            json.dumps(
+                {
+                    "id": span.id,
+                    "sha256": span.sha256,
+                    "origin": span.origin,
+                    "branch": span.branch,
+                    "text": span.text,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+            for span in spans
+        ]
+        self._write("evidence.jsonl", "\n".join(lines) + ("\n" if lines else ""))
+
     def save_cross_branch(self, text: str) -> None:
         self._write("cross-branch.md", text)
 
     def save_final_synthesis(self, text: str) -> None:
         self._write("final.md", text)
 
-    def save_metadata(self, original_instruction: str, parameters: RunParameters, cost: dict[str, Any]) -> None:
+    def save_metadata(
+        self,
+        original_instruction: str,
+        parameters: RunParameters,
+        cost: dict[str, Any],
+        language: dict[str, Any] | None = None,
+    ) -> None:
         meta = {
             "mode": parameters.mode.value,
             "original_instruction": original_instruction,
@@ -160,6 +248,8 @@ class RunArchive:
             "early_stop_threshold": parameters.early_stop_threshold,
             "cost": cost,
         }
+        if language is not None:
+            meta["language"] = language
         self._write("meta.json", json.dumps(meta, indent=2, default=str))
 
     def save_searches(self, searches: list[dict[str, str | int]]) -> None:

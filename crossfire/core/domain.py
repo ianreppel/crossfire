@@ -661,6 +661,7 @@ class CostEntry:
     cost: float | None = None
     provider: str = ""
     wire_model_id: str = ""
+    branch: str = ""
 
 
 @dataclass

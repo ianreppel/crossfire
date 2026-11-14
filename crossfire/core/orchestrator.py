@@ -48,6 +48,7 @@ from crossfire.core.prompts import (
     build_cross_branch_adjudicator_prompt,
     build_enrichment_prompt,
     build_generator_prompt,
+    build_language_tag,
     build_reviewer_prompt,
     build_synthesizer_prompt,
     build_translation_prompt,
@@ -183,16 +184,18 @@ class Orchestrator:
         if configuration.language_layer:
             return configuration.language_layer
         resolved = configuration.language
-        return {
+        layer: dict[str, Any] = {
             "source": resolved.source,
             "branches": list(resolved.branches),
-            "preset": resolved.preset,
-            "competence_branch": resolved.competence_branch,
-            "render_language": resolved.render_language,
             "translate_instruction": resolved.translate_instruction,
             "adjudicate": resolved.adjudicate,
             "translator_backend": resolved.translator_backend,
         }
+        for key in ("preset", "competence_branch", "render_language"):
+            value = getattr(resolved, key)
+            if value is not None:
+                layer[key] = value
+        return layer
 
     def _resolve_language(self, configuration: CrossfireConfiguration) -> tuple[LanguageConfiguration, dict[str, str]]:
         """Resolves this run's language configuration from the CLI, mode and global layers."""
@@ -320,6 +323,7 @@ class Orchestrator:
         # gateways is say plainly what the chosen models do with the prompts.
         for notice in self.configuration.data_policy_notices():
             log.log_data_policy_notice(notice=notice)
+        log.log_language_resolved(language=self._language_manifest())
 
         if not self.parameters.dry_run:
             self._api_key = get_api_key(self.configuration)
@@ -328,6 +332,7 @@ class Orchestrator:
         original_instruction: str = self._active_task.instruction
         try:
             if self._archive:
+                self._archive.claim_owner(adopt_stale=self.parameters.resume)
                 self._archive.save_original_instruction(original_instruction)
 
             branches = self._build_branches(self.configuration)
@@ -374,11 +379,14 @@ class Orchestrator:
                     original_instruction,
                     replace(self.parameters, task=primary.task),
                     cost,
+                    language=self._language_manifest(),
                 )
                 if self._searches_performed:
                     self._archive.save_searches(self._searches_performed)
             return result
         finally:
+            if self._archive is not None:
+                self._archive.release_owner()
             if self._http_client is not None:
                 await self._http_client.aclose()
                 self._http_client = None
@@ -396,6 +404,8 @@ class Orchestrator:
         syntheses = {context.branch.language: context.synthesis_history[-1] for context in contexts}
         claims: list[Claim] = extract_claims(syntheses)
         registry = self._build_evidence_registry(syntheses)
+        if self._archive:
+            self._archive.save_evidence(registry.spans())
         model = self.configuration.adjudicator.names[0]
         packets = partition_claims(
             claims,
@@ -467,7 +477,7 @@ class Orchestrator:
         )
         header = (
             f"# Crossfire render ({render_language})\n\n"
-            "This file is a non-attested translation assembled from the cross-branch comparison. "
+            "This file is a non-attested translation assembled from the cross-branch comparison.\n"
             "It is not evidence and it is not any one branch's synthesis.\n\n"
             f"Branches: {', '.join(branches)}. Claims compared: {len(verdicts)}."
         )
@@ -590,6 +600,33 @@ class Orchestrator:
             if context.branch.language == self.language.source:
                 return context
         return contexts[0]
+
+    def _language_manifest(self) -> dict[str, Any]:
+        """Returns the resolved language configuration and the layer that supplied each value."""
+        language = self.language
+        return {
+            "source": language.source,
+            "branches": list(language.branches),
+            "preset": language.preset,
+            "competence_branch": language.competence_branch,
+            "render_language": language.render_language,
+            "translate_instruction": language.translate_instruction,
+            "adjudicate": language.adjudicate,
+            "translator_backend": language.translator_backend,
+            "provenance": dict(self.language_provenance),
+        }
+
+    def _language_tag(self) -> str:
+        """Returns the response-language instruction for the running branch, or an empty string.
+
+        A single branch in the source language already speaks the instruction's language, so it gets no tag and its
+        prompts stay byte-identical to the single-language pipeline. Every other branch is told which language to answer
+        in, and told to quote evidence in the language it appears in.
+        """
+        language = self._active_task.language
+        if len(self.language.branches) == 1 and language == self.language.source:
+            return ""
+        return build_language_tag(language)
 
     def _archive_for(self, branch: Branch) -> RunArchive | None:
         """Returns the archive a branch writes to.
@@ -1026,6 +1063,7 @@ class Orchestrator:
             round_num=round_num,
             search_results=prior_search,
             search_enabled=self.configuration.search.enabled,
+            language_tag=self._language_tag(),
         )
 
         # Priority order for compression when the prompt exceeds the token budget:
@@ -1078,6 +1116,7 @@ class Orchestrator:
             round=round_num,
             index=index,
             search_results=search_results,
+            language=self._active_task.language,
         )
 
     # -- review ---
@@ -1200,6 +1239,7 @@ class Orchestrator:
             candidate=candidate,
             search_results=candidate.search_results,
             search_enabled=self.configuration.search.enabled,
+            language_tag=self._language_tag(),
         )
 
         try:
@@ -1249,6 +1289,7 @@ class Orchestrator:
             round=round_num,
             candidate_index=candidate.index,
             search_results=search_results,
+            language=self._active_task.language,
         )
 
     async def _review(
@@ -1353,6 +1394,7 @@ class Orchestrator:
             instruction=self._active_task.instruction,
             candidates=candidates,
             reviews=reviews,
+            language_tag=self._language_tag(),
         )
 
         compressible_parts: list[tuple[str, str]] = [
@@ -1389,6 +1431,7 @@ class Orchestrator:
             round=round_num,
             attributions=attributions,
             notes=notes,
+            language=self._active_task.language,
         )
         log.log_synthesis_decision(
             round=round_num,
@@ -1617,6 +1660,7 @@ class Orchestrator:
                 cost=cost,
                 provider=provider.name,
                 wire_model_id=wire_model_id,
+                branch=self._active_task.language,
             )
         )
 
