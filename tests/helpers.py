@@ -63,6 +63,7 @@ def orchestrator_for(
     num_rounds: int = 1,
     source: str = "en",
     branches: tuple[str, ...] = ("en", "de"),
+    resume: bool = False,
 ) -> Orchestrator:
     """Builds an orchestrator over *num_rounds* rounds, ready to call models through the fake transport."""
     parameters = RunParameters(
@@ -71,6 +72,8 @@ def orchestrator_for(
         num_generators=1,
         num_reviewers_per_candidate=1,
         num_rounds=num_rounds,
+        resume=resume,
+        early_stop=False,
     )
     configuration = two_branch_configuration(source=source, branches=branches)
     orchestrator = Orchestrator(configuration, parameters, archive=RunArchive(archive_base))

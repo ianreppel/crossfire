@@ -184,6 +184,10 @@ def log_prompt_enriched(*, model: str, original_tokens: int, enriched_tokens: in
     )
 
 
+def log_round_resumed(*, branch: str, round: int) -> None:
+    _emit("round_resumed", branch=branch, round=round)
+
+
 def log_branch_excluded(*, branch: str, reason: BranchState) -> None:
     _emit("branch_excluded", level=logging.WARNING, branch=branch, reason=str(reason))
 

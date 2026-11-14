@@ -8,6 +8,8 @@ import pytest
 
 from crossfire.core.archive import ArchiveWriteError, RunArchive
 from crossfire.core.hashing import sha256_text
+from tests.fakes.transport import FakeTransport
+from tests.helpers import orchestrator_for
 
 
 class TestJournal:
@@ -29,3 +31,26 @@ class TestJournal:
 
         assert not (tmp_path / "run" / "final.md.tmp").exists(), "a failed write leaves no temporary file behind"
         assert [record["path"] for record in archive.journal.replay() if record["event"] == "artefact"] == ["final.md"]
+
+
+class TestResume:
+    @pytest.mark.asyncio
+    async def test_resume_skips_hash_matched_rounds(
+        self, fake_transport: FakeTransport, tmp_path: Path
+    ) -> None:
+        instruction = "Explain the Nanjing death toll with sources."
+        first = orchestrator_for(instruction, tmp_path, num_rounds=2, branches=("en", "de"))
+        await first.run()
+        settled = (fake_transport.count("generator"), fake_transport.count("translator"), fake_transport.count("synthesizer"))
+
+        resumed = orchestrator_for(instruction, tmp_path, num_rounds=3, branches=("en", "de"), resume=True)
+        await resumed.run()
+
+        generators = fake_transport.count("generator") - settled[0]
+        translators = fake_transport.count("translator") - settled[1]
+        syntheses = fake_transport.count("synthesizer") - settled[2]
+        assert generators == 2, "only round 3 runs, once per branch"
+        assert syntheses == 2
+        assert translators == 0, "the attested translation is reused, not paid for twice"
+        final = (tmp_path / "final.md").read_text(encoding="utf-8")
+        assert final.strip()

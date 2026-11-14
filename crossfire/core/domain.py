@@ -610,6 +610,7 @@ class RunParameters:
     early_stop: bool = True
     early_stop_threshold: int = 1
     language_cli: dict[str, Any] = field(default_factory=dict)
+    resume: bool = False
 
 
 @dataclass(frozen=True)

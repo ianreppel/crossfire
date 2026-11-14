@@ -65,9 +65,23 @@ class RunJournal:
 class RunArchive:
     """Writes run artifacts to ``base / round-N / <file>``, with an append-only journal at ``base``."""
 
-    def __init__(self, base: Path) -> None:
+    def __init__(self, base: Path, journal: RunJournal | None = None, prefix: str = "") -> None:
         self.base = base
-        self.journal = RunJournal(base / "journal.jsonl")
+        self.journal = journal or RunJournal(base / "journal.jsonl")
+        self.prefix = prefix
+
+    def child(self, *parts: str) -> RunArchive:
+        """Returns an archive in a subdirectory that appends to this archive's journal.
+
+        One run, one journal: a branch writes into its own directory but records into the same append-only file, so
+        ``--resume`` reads a single record of everything that happened.
+        """
+        segments = [segment for segment in (self.prefix, *parts) if segment]
+        return RunArchive(self.base.joinpath(*parts), journal=self.journal, prefix="/".join(segments))
+
+    def record_path(self, rel_path: str) -> str:
+        """Returns *rel_path* relative to the run root, which is what the journal records."""
+        return f"{self.prefix}/{rel_path}" if self.prefix else rel_path
 
     def _write(self, rel_path: str, content: str) -> str:
         """Writes *content* atomically, journals its hash, and returns the hash.
@@ -87,7 +101,12 @@ class RunArchive:
             raise ArchiveWriteError(f"Could not write {rel_path}: {exception}") from exception
 
         digest = sha256_text(content)
-        self.journal.append("artefact", path=rel_path, sha256=digest, bytes=len(content.encode("utf-8")))
+        self.journal.append(
+            "artefact",
+            path=self.record_path(rel_path),
+            sha256=digest,
+            bytes=len(content.encode("utf-8")),
+        )
         return digest
 
     def save_candidate(self, candidate: Candidate) -> None:
@@ -113,8 +132,8 @@ class RunArchive:
     def save_branch_output(self, text: str) -> None:
         self._write("output.md", text)
 
-    def save_branch_instruction(self, language: str, text: str) -> None:
-        self._write(f"branches/{language}/instruction.md", text)
+    def save_branch_instruction(self, language: str, text: str) -> str:
+        return self._write(f"branches/{language}/instruction.md", text)
 
     def save_enriched(self, text: str) -> None:
         self._write("enriched-instruction.md", text)

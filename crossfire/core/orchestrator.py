@@ -160,6 +160,9 @@ class Orchestrator:
         )
         self._active_task: Task = parameters.task
         self._active_archive: RunArchive | None = archive
+        # On --resume the journal decides which units are already done: a unit counts only while its artefact hash
+        # still matches the file on disk.
+        self._journal_records: list[dict[str, Any]] = archive.journal.replay() if archive and parameters.resume else []
 
     # -- language surface ---
 
@@ -273,7 +276,14 @@ class Orchestrator:
             return replace(branch, state=BranchState.TRANSLATION_FAILED)
         translated = restore_do_not_translate(translated, spans)
         if self._archive:
-            self._archive.save_branch_instruction(branch.language, translated)
+            digest = self._archive.save_branch_instruction(branch.language, translated)
+            self._archive.journal.append(
+                "instruction_attested",
+                branch=branch.language,
+                model=model,
+                path=self._archive.record_path(f"branches/{branch.language}/instruction.md"),
+                sha256=digest,
+            )
         return replace(
             branch,
             instruction_text=translated,
@@ -316,7 +326,7 @@ class Orchestrator:
             branches = self._build_branches(self.configuration)
             contexts: list[BranchContext] = []
             for branch in branches:
-                translated = await self._translate_instruction(branch)
+                translated = self._resumed_instruction(branch) or await self._translate_instruction(branch)
                 if translated.state is BranchState.TRANSLATION_FAILED:
                     log.log_branch_excluded(branch=translated.language, reason=BranchState.TRANSLATION_FAILED)
                     continue
@@ -353,6 +363,59 @@ class Orchestrator:
                 await self._http_client.aclose()
                 self._http_client = None
 
+    def _journal_round(self, branch: str, round_num: int, synthesis_text: str) -> None:
+        """Records a completed round with the hash of its synthesis artefact."""
+        if self._active_archive is None:
+            return
+        self._active_archive.journal.append(
+            "round_completed",
+            branch=branch,
+            round=round_num,
+            path=self._active_archive.record_path(f"round-{round_num}/synthesis.md"),
+            sha256=sha256_text(synthesis_text),
+        )
+
+    def _journal_artefact_matches(self, record: dict[str, Any]) -> str | None:
+        """Returns the artefact's text when it still hashes to the journalled value, else ``None``."""
+        if self._archive is None:
+            return None
+        path = str(record.get("path", ""))
+        expected = str(record.get("sha256", ""))
+        target = self._archive.base / path
+        if not path or not expected or not target.is_file():
+            return None
+        text = target.read_text(encoding="utf-8")
+        return text if sha256_text(text) == expected else None
+
+    def _completed_round(self, branch: str, round_num: int) -> str | None:
+        """Returns the synthesis of a journalled round whose artefact still matches, else ``None``."""
+        for record in reversed(self._journal_records):
+            if (
+                record.get("event") == "round_completed"
+                and record.get("branch") == branch
+                and record.get("round") == round_num
+            ):
+                return self._journal_artefact_matches(record)
+        return None
+
+    def _resumed_instruction(self, branch: Branch) -> Branch | None:
+        """Returns *branch* with its attested translation restored from the journal, or ``None``."""
+        if branch.instruction_text or not self._journal_records:
+            return None
+        for record in reversed(self._journal_records):
+            if record.get("event") == "instruction_attested" and record.get("branch") == branch.language:
+                text = self._journal_artefact_matches(record)
+                if text is None:
+                    return None
+                return replace(
+                    branch,
+                    instruction_text=text,
+                    instruction_model=str(record.get("model", "")),
+                    instruction_hash=sha256_text(text),
+                    state=BranchState.TRANSLATED,
+                )
+        return None
+
     def _primary_context(self, contexts: list[BranchContext]) -> BranchContext:
         """Returns the branch whose synthesis is the run's own output: the source branch when it survived."""
         for context in contexts:
@@ -370,7 +433,7 @@ class Orchestrator:
             return None
         if len(self.language.branches) == 1:
             return self._archive
-        return RunArchive(self._archive.base / "branches" / branch.language)
+        return self._archive.child("branches", branch.language)
 
     async def _run_branch(self, context: BranchContext) -> BranchContext:
         """Runs today's round loop for one branch and returns its context.
@@ -381,6 +444,12 @@ class Orchestrator:
         self._active_context = context
         self._active_task = context.task
         self._active_archive = self._archive_for(context.branch)
+        if self._active_archive:
+            self._active_archive.journal.append(
+                "branch_started",
+                branch=context.branch.language,
+                instruction_hash=context.branch.instruction_hash,
+            )
 
         if self.parameters.enrich and self.configuration.enricher.names:
             try:
@@ -398,6 +467,13 @@ class Orchestrator:
         previous_synthesis: str = ""
         for round_num in range(1, self.parameters.num_rounds + 1):
             self._progress.on_round_start(round_num, self.parameters.num_rounds)
+            resumed = self._completed_round(context.branch.language, round_num)
+            if resumed is not None:
+                context.consecutive_round_failures = 0
+                previous_synthesis = resumed
+                context.synthesis_history.append(previous_synthesis)
+                log.log_round_resumed(branch=context.branch.language, round=round_num)
+                continue
             result = await self._run_round(round_num, previous_synthesis)
 
             if result is not None:
@@ -405,6 +481,7 @@ class Orchestrator:
                 context.consecutive_round_failures = 0
                 previous_synthesis = result.synthesis_text
                 context.synthesis_history.append(previous_synthesis)
+                self._journal_round(context.branch.language, round_num, previous_synthesis)
 
                 if (
                     self.parameters.early_stop
@@ -438,10 +515,22 @@ class Orchestrator:
 
         if not previous_synthesis.strip():
             context.branch = replace(context.branch, state=BranchState.BRANCH_FAILED)
+            if self._active_archive:
+                self._active_archive.journal.append(
+                    "branch_failed",
+                    branch=context.branch.language,
+                    reason=BranchState.BRANCH_FAILED.value,
+                )
             return context
 
         context.branch = replace(context.branch, state=BranchState.SYNTHESIZED)
         if self._active_archive:
+            self._active_archive.journal.append(
+                "synthesis",
+                branch=context.branch.language,
+                rounds=len(context.synthesis_history),
+                sha256=sha256_text(previous_synthesis),
+            )
             if len(self.language.branches) > 1:
                 self._active_archive.save_branch_output(previous_synthesis)
             else:
@@ -549,9 +638,9 @@ class Orchestrator:
             )
             return None
 
-        if self._archive:
+        if self._active_archive:
             for candidate in candidates:
-                self._archive.save_candidate(candidate)
+                self._active_archive.save_candidate(candidate)
 
         # --- review phase ---
         log.log_phase_start(round=round_num, phase=Phase.REVIEW)
@@ -566,9 +655,9 @@ class Orchestrator:
             )
             return None
 
-        if self._archive:
+        if self._active_archive:
             for review in reviews:
-                self._archive.save_review(review)
+                self._active_archive.save_review(review)
 
         # A review without a valid envelope cannot be read as approval, so the round records it and carries on.
         for review in reviews:
@@ -605,8 +694,8 @@ class Orchestrator:
             )
             return None
 
-        if self._archive:
-            self._archive.save_synthesis(synthesis)
+        if self._active_archive:
+            self._active_archive.save_synthesis(synthesis)
 
         if previous_synthesis and self._is_synthesis_regression(previous_synthesis, synthesis.text):
             log.log_synthesis_regression(
