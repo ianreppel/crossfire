@@ -323,6 +323,42 @@ class Branch:
     state: BranchState = BranchState.PENDING
 
 
+class VerdictState(enum.StrEnum):
+    """What a cross-branch comparison can conclude, including that it cannot conclude anything."""
+
+    AGREES = "agrees"
+    DISAGREES = "disagrees"
+    ABSENT_IN_BRANCH = "absent_in_branch"
+    BRANCH_UNREADABLE = "branch_unreadable"
+    NO_EVIDENCE = "no_evidence"
+
+
+@dataclass(frozen=True)
+class EvidenceSpan:
+    """One immutable span the adjudicator may cite, verbatim and in its original script.
+
+    ``origin`` is ``source``, ``context`` or ``branch_citation``; ``branch`` names the branch a citation came from.
+    """
+
+    id: str
+    text: str
+    sha256: str
+    origin: str
+    branch: str = ""
+
+
+@dataclass
+class CrossBranchVerdict:
+    """One claim's standing across branches, with the verbatim passage each branch gave for it."""
+
+    claim: str
+    state: VerdictState
+    by_branch: dict[str, str] = field(default_factory=dict)
+    evidence_ids: list[str] = field(default_factory=list)
+    adjudicator: str = ""
+    packet: int = 0
+
+
 @dataclass(frozen=True)
 class LanguageConfiguration:
     """Language surface for a run: one branch per language, plus the source and render languages.
