@@ -2,8 +2,15 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
+import pytest
+
 from crossfire.core.adjudication import Claim, extract_claims, partition_claims
+from crossfire.core.evidence import EvidenceRegistry
 from crossfire.core.tokens import compute_token_budget, estimate_tokens
+from tests.fakes.transport import FakeTransport
+from tests.helpers import orchestrator_for
 
 
 class TestAdjudication:
@@ -42,3 +49,33 @@ class TestAdjudication:
             claim.text in english or claim.text in german for claim in claims
         ), "a claim is always some branch's own wording, never a rendering"
         assert not any(key.startswith("#") for key in keys), "headings are not claims"
+
+    @pytest.mark.asyncio
+    async def test_disagree_verdict_reaches_cross_branch_md(
+        self, fake_transport: FakeTransport, tmp_path: Path
+    ) -> None:
+        instruction = "Explain the Nanjing death toll with sources."
+        english_answer = "## Answer\n\nThe toll was 200,000 or more [1]."
+        german_answer = "## Antwort\n\nDie Zahl der Toten ist in den Quellen umstritten."
+        fake_transport.queue("translator", "Erklären Sie die Opferzahl von Nanjing anhand von Quellen.")
+        fake_transport.queue("synthesizer", english_answer, german_answer)
+        source_id = EvidenceRegistry().add(instruction, origin="source").id
+        claim = extract_claims({"en": english_answer, "de": german_answer})[0]
+        fake_transport.queue(
+            "adjudicator",
+            '{"crossfire_adjudication": {"verdicts": [{"claim": "' + claim.key + '", "state": "disagrees", '
+            '"by_branch": {"en": "The toll was 200,000 or more [1].", "de": "Die Zahl der Toten ist umstritten."}, '
+            '"evidence_ids": ["' + source_id + '"]}]}}\n'
+            'CROSSFIRE-ADJUDICATION {"claims": 1, "unavailable": 0}',
+        )
+        orchestrator = orchestrator_for(instruction, tmp_path, branches=("en", "de"))
+
+        await orchestrator.run()
+
+        cross_branch = (tmp_path / "cross-branch.md").read_text(encoding="utf-8")
+        assert "disagrees" in cross_branch
+        assert "The toll was 200,000 or more [1]." in cross_branch
+        assert "Die Zahl der Toten ist umstritten." in cross_branch
+        assert source_id in cross_branch
+        assert fake_transport.count("adjudicator") == 1
+        assert claim.text in cross_branch

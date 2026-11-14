@@ -41,7 +41,11 @@ class TestResume:
         instruction = "Explain the Nanjing death toll with sources."
         first = orchestrator_for(instruction, tmp_path, num_rounds=2, branches=("en", "de"))
         await first.run()
-        settled = (fake_transport.count("generator"), fake_transport.count("translator"), fake_transport.count("synthesizer"))
+        settled = (
+            fake_transport.count("generator"),
+            fake_transport.count("translator"),
+            fake_transport.count("synthesizer"),
+        )
 
         resumed = orchestrator_for(instruction, tmp_path, num_rounds=3, branches=("en", "de"), resume=True)
         await resumed.run()

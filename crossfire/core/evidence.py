@@ -7,6 +7,7 @@ the branch synthesis it was taken from, is invalid: the comparison says so rathe
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from dataclasses import replace
 
@@ -15,6 +16,10 @@ from crossfire.core.hashing import sha256_text
 
 # Where a span came from: the instruction, the user context, or a citation a branch produced.
 EVIDENCE_ORIGINS: tuple[str, ...] = ("source", "context", "branch_citation")
+
+# A citation line a branch produced: a bracketed number, then an author or title and at least one more word.
+_CITATION_LINE_REGEX = re.compile(r"^\s*\[\d+\]\s+\S.*\S")
+_IDENTIFIER_REGEX = re.compile(r"https?://\S+|\b10\.\d{4,9}/[^\s\"<>,;]+")
 
 
 class EvidenceRegistry:
@@ -41,6 +46,19 @@ class EvidenceRegistry:
             span = EvidenceSpan(id=span_id, text=text, sha256=digest, origin=origin, branch=branch)
             self._spans[span_id] = span
         return span
+
+    def harvest(self, branch: str, text: str) -> list[EvidenceSpan]:
+        """Stores every citation line a branch produced, verbatim and in the branch's own script.
+
+        Numerals and quoted passages stay inside the citation line that carries them, so a passage is never stored
+        apart from the reference that identifies it.
+        """
+        spans: list[EvidenceSpan] = []
+        for line in text.split("\n"):
+            stripped = line.strip()
+            if _CITATION_LINE_REGEX.match(stripped) or _IDENTIFIER_REGEX.search(stripped):
+                spans.append(self.add(stripped, origin="branch_citation", branch=branch))
+        return spans
 
     def resolve(self, span_id: str) -> EvidenceSpan | None:
         """Returns the stored span for *span_id*, or ``None`` when it does not resolve."""

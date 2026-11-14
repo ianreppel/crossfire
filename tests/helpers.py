@@ -50,6 +50,7 @@ def two_branch_configuration(
         reviewers=ModelGroup(names=("rev-a",), context_window=16000),
         synthesizer=ModelGroup(names=("synth-a",), context_window=32000),
         translator=ModelGroup(names=("trans-a",), context_window=16000),
+        adjudicator=ModelGroup(names=("adj-a",), context_window=200000),
         search=SearchConfiguration(enabled=False),
         limits=LimitsConfiguration(max_concurrent_requests=2),
         language=LanguageConfiguration(source=source, branches=branches),

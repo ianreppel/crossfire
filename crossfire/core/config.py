@@ -68,6 +68,7 @@ _ROLE_DEFAULTS: dict[str, tuple[int, int]] = {
     "reviewers": (16000, 4096),
     "synthesizer": (200000, 32000),
     "translator": (16000, 4096),
+    "adjudicator": (200000, 32000),
 }
 
 # [limits.reasoning] uses the plural group names from [models.*]; roles are singular.
@@ -77,6 +78,7 @@ _ROLE_GROUP_TO_ROLE: dict[str, str] = {
     "synthesizer": "synthesizer",
     "enricher": "enricher",
     "translator": "translator",
+    "adjudicator": "adjudicator",
 }
 
 
@@ -86,7 +88,7 @@ def _parse_mode_overrides(modes_raw: dict[str, Any]) -> dict[str, ModelGroupOver
         if not isinstance(mode_data, dict):
             continue
         kwargs: dict[str, ModelGroup] = {}
-        for role in ("generators", "reviewers", "synthesizer", "enricher", "translator"):
+        for role in ("generators", "reviewers", "synthesizer", "enricher", "translator", "adjudicator"):
             if role in mode_data:
                 context_window_default, max_output_tokens_default = _ROLE_DEFAULTS[role]
                 kwargs[role] = _parse_model_group(
@@ -192,6 +194,7 @@ def load_configuration(
     reviewers = parsed_groups["reviewers"]
     synthesizer = parsed_groups["synthesizer"]
     translator = parsed_groups["translator"]
+    adjudicator = parsed_groups["adjudicator"]
 
     search_raw = raw.get("search", {})
     search = SearchConfiguration(
@@ -242,6 +245,7 @@ def load_configuration(
         reviewers=reviewers,
         synthesizer=synthesizer,
         translator=translator,
+        adjudicator=adjudicator,
         search=search,
         limits=limits,
         mode_overrides=mode_overrides,

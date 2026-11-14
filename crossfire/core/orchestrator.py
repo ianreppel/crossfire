@@ -13,6 +13,7 @@ from uuid import uuid4
 import httpx
 
 from crossfire.core import logging as log
+from crossfire.core.adjudication import Claim, extract_claims, partition_claims, render_cross_branch
 from crossfire.core.archive import RunArchive
 from crossfire.core.compression import compress_prompt_components
 from crossfire.core.config import get_api_key
@@ -23,6 +24,7 @@ from crossfire.core.domain import (
     Candidate,
     CostEntry,
     CostTracker,
+    CrossBranchVerdict,
     CrossfireConfiguration,
     LanguageConfiguration,
     ModelGroup,
@@ -33,7 +35,9 @@ from crossfire.core.domain import (
     RunParameters,
     SynthesisResult,
     Task,
+    VerdictState,
 )
+from crossfire.core.evidence import EvidenceRegistry, apply_evidence_rules
 from crossfire.core.exclamations import exclaim
 from crossfire.core.hashing import sha256_text
 from crossfire.core.language import resolve_language, validate_language
@@ -41,12 +45,14 @@ from crossfire.core.pricing import PRICING_FILENAME, load_pricing
 from crossfire.core.progress import NoOpProgress, ProgressCallback
 from crossfire.core.prompts import (
     EnvelopeError,
+    build_cross_branch_adjudicator_prompt,
     build_enrichment_prompt,
     build_generator_prompt,
     build_reviewer_prompt,
     build_synthesizer_prompt,
     build_translation_prompt,
     parse_control_envelope,
+    parse_cross_branch_verdicts,
     parse_synthesis_decision,
     strip_synthesis_decision,
 )
@@ -103,6 +109,7 @@ _FATAL_ERRORS: tuple[type[Exception], ...] = (AuthenticationError, InsufficientC
 ROLE_TO_PHASE: dict[Role, Phase] = {
     Role.ENRICHER: Phase.ENRICHMENT,
     Role.TRANSLATOR: Phase.TRANSLATE,
+    Role.ADJUDICATOR: Phase.ADJUDICATE,
     Role.GENERATOR: Phase.GENERATION,
     Role.REVIEWER: Phase.REVIEW,
     Role.SYNTHESIZER: Phase.SYNTHESIS,
@@ -324,6 +331,10 @@ class Orchestrator:
                 self._archive.save_original_instruction(original_instruction)
 
             branches = self._build_branches(self.configuration)
+            if len(branches) >= 2 and self.language.adjudicate and not self.configuration.adjudicator.names:
+                raise ValueError(
+                    "No adjudicator models configured: set [models.adjudicator] names, or set adjudicate = false"
+                )
             contexts: list[BranchContext] = []
             for branch in branches:
                 translated = self._resumed_instruction(branch) or await self._translate_instruction(branch)
@@ -347,6 +358,11 @@ class Orchestrator:
             primary = self._primary_context(synthesised)
             result: str = primary.synthesis_history[-1]
 
+            if len(synthesised) >= 2 and self.language.adjudicate:
+                verdicts, published = await self._adjudicate_branches(synthesised)
+                if self._archive and verdicts:
+                    self._archive.save_cross_branch(published)
+
             if self._archive:
                 if len(branches) > 1:
                     self._archive.save_final_synthesis(result)
@@ -362,6 +378,80 @@ class Orchestrator:
             if self._http_client is not None:
                 await self._http_client.aclose()
                 self._http_client = None
+
+    async def _adjudicate_branches(
+        self,
+        contexts: list[BranchContext],
+    ) -> tuple[list[CrossBranchVerdict], str]:
+        """Compares the branch syntheses claim by claim and returns the verdicts plus the published markdown.
+
+        Claims are packed into packets under the adjudicator's context window and one call is made per packet. A packet
+        that fails twice leaves the run ``adjudication_incomplete``: the branch outputs still publish, and the missing
+        packet is named, because a comparison that did not happen is not a clean comparison.
+        """
+        syntheses = {context.branch.language: context.synthesis_history[-1] for context in contexts}
+        claims: list[Claim] = extract_claims(syntheses)
+        registry = self._build_evidence_registry(syntheses)
+        model = self.configuration.adjudicator.names[0]
+        packets = partition_claims(
+            claims,
+            context_window=self.configuration.adjudicator.resolve_context_window(model),
+            max_output_tokens=self.configuration.adjudicator.resolve_max_output_tokens(model),
+        )
+
+        verdicts: list[CrossBranchVerdict] = []
+        incomplete: list[int] = []
+        for index, packet in enumerate(packets, start=1):
+            system, user = build_cross_branch_adjudicator_prompt(packet, syntheses, registry.spans())
+            parsed: list[CrossBranchVerdict] | None = None
+            error = ""
+            for _attempt in range(2):
+                try:
+                    text = await self._call_llm(
+                        model=model,
+                        system_prompt=system,
+                        user_prompt=user,
+                        role=Role.ADJUDICATOR,
+                        round_num=0,
+                        max_retries=0,
+                    )
+                    parse_control_envelope(text)
+                    parsed = parse_cross_branch_verdicts(text)
+                except Exception as exception:
+                    error = str(exception)
+                    continue
+                break
+            if parsed is None:
+                incomplete.append(index)
+                log.log_adjudication_incomplete(packet=index, error=error)
+                continue
+            for verdict in parsed:
+                normalised, _violations = apply_evidence_rules(verdict, registry, syntheses)
+                normalised.packet = index
+                normalised.adjudicator = model
+                verdicts.append(normalised)
+
+        unavailable = sum(1 for verdict in verdicts if verdict.state is not VerdictState.AGREES)
+        log.log_adjudication(packets=len(packets), verdicts=len(verdicts), unavailable=unavailable)
+        if self._archive:
+            self._archive.journal.append(
+                "adjudicated",
+                packets=len(packets),
+                incomplete=incomplete,
+                verdicts=len(verdicts),
+                path="cross-branch.md",
+            )
+        return verdicts, render_cross_branch(verdicts, syntheses=syntheses, adjudicator=model, incomplete=incomplete)
+
+    def _build_evidence_registry(self, syntheses: dict[str, str]) -> EvidenceRegistry:
+        """Stores the source, the context and every citation the branches produced."""
+        registry = EvidenceRegistry()
+        registry.add(self.parameters.task.instruction, origin="source")
+        if self.parameters.task.context:
+            registry.add(self.parameters.task.context, origin="context")
+        for branch, synthesis in syntheses.items():
+            registry.harvest(branch, synthesis)
+        return registry
 
     def _journal_round(self, branch: str, round_num: int, synthesis_text: str) -> None:
         """Records a completed round with the hash of its synthesis artefact."""
@@ -1334,6 +1424,8 @@ class Orchestrator:
             return self.configuration.synthesizer
         if role is Role.TRANSLATOR:
             return self.configuration.translator
+        if role is Role.ADJUDICATOR:
+            return self.configuration.adjudicator
         return self.configuration.enricher
 
     def _load_pricing(self) -> dict[str, tuple[float, float]]:

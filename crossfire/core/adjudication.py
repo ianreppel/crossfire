@@ -11,6 +11,7 @@ import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 
+from crossfire.core.domain import CrossBranchVerdict
 from crossfire.core.tokens import compute_token_budget, estimate_tokens
 
 _IDENTIFIER_REGEXES: tuple[re.Pattern[str], ...] = (
@@ -104,3 +105,31 @@ def partition_claims(
     if current or not packets:
         packets.append(current)
     return packets
+
+
+def render_cross_branch(
+    verdicts: Sequence[CrossBranchVerdict],
+    *,
+    syntheses: Mapping[str, str],
+    adjudicator: str,
+    incomplete: Sequence[int] = (),
+) -> str:
+    """Renders the adjudication as markdown: each claim, its state, and every branch's verbatim passage.
+
+    Disagreement is published rather than collapsed, and a packet that did not complete is named, because a comparison
+    that did not happen must not read as a clean one.
+    """
+    lines: list[str] = ["# Cross-branch adjudication", ""]
+    lines.append(f"Branches: {', '.join(syntheses)}.")
+    lines.append(f"Adjudicator: {adjudicator}.")
+    lines.append(f"Claims compared: {len(verdicts)}.")
+    if incomplete:
+        named = ", ".join(str(index) for index in incomplete)
+        lines.append(f"Incomplete packets: {named}. The run is adjudication_incomplete.")
+    for verdict in verdicts:
+        lines.extend(["", f"## {verdict.claim}", "", f"State: {verdict.state.value}."])
+        for branch, passage in verdict.by_branch.items():
+            lines.append(f"- {branch}: {passage or '(omitted)'}")
+        if verdict.evidence_ids:
+            lines.append(f"Evidence: {', '.join(verdict.evidence_ids)}.")
+    return "\n".join(lines).rstrip() + "\n"

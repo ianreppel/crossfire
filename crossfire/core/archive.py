@@ -138,6 +138,9 @@ class RunArchive:
     def save_enriched(self, text: str) -> None:
         self._write("enriched-instruction.md", text)
 
+    def save_cross_branch(self, text: str) -> None:
+        self._write("cross-branch.md", text)
+
     def save_final_synthesis(self, text: str) -> None:
         self._write("final.md", text)
 

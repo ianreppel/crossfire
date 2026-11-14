@@ -184,6 +184,14 @@ def log_prompt_enriched(*, model: str, original_tokens: int, enriched_tokens: in
     )
 
 
+def log_adjudication(*, packets: int, verdicts: int, unavailable: int) -> None:
+    _emit("adjudicated", packets=packets, verdicts=verdicts, unavailable=unavailable)
+
+
+def log_adjudication_incomplete(*, packet: int, error: str) -> None:
+    _emit("adjudication_incomplete", level=logging.WARNING, packet=packet, error=error)
+
+
 def log_round_resumed(*, branch: str, round: int) -> None:
     _emit("round_resumed", branch=branch, round=round)
 

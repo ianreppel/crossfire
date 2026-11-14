@@ -5,10 +5,18 @@ from __future__ import annotations
 import json
 import re
 from collections import defaultdict
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-from crossfire.core.domain import Candidate, CandidateDecision, Mode, Review
+from crossfire.core.domain import (
+    Candidate,
+    CandidateDecision,
+    CrossBranchVerdict,
+    Mode,
+    Review,
+    VerdictState,
+)
 
 MODE_RULES: dict[Mode, str] = {
     Mode.RESEARCH: (
@@ -523,6 +531,117 @@ def build_synthesizer_prompt(
 
     user = "".join(parts)
     return system, user
+
+
+_ADJUDICATOR_SYSTEM = (
+    "You compare several answers to the same question, each written in its own language, claim by claim.\n\n"
+    "- Judge each claim only on the passages the branches actually wrote; never translate a passage into another "
+    "language and treat the translation as a source\n"
+    "- Cite evidence ids from the registry, and nothing else\n"
+    "- A claim one branch omits is absent_in_branch, not a disagreement\n"
+    "- A branch you cannot read is branch_unreadable: say so rather than guessing\n"
+    "- Agreement with no evidence id is no_evidence\n"
+    "- Publish disagreement; never collapse it into a single answer"
+)
+
+_ADJUDICATION_KEY = "crossfire_adjudication"
+_ADJUDICATION_STATES: tuple[str, ...] = (
+    "agrees",
+    "disagrees",
+    "absent_in_branch",
+    "branch_unreadable",
+    "no_evidence",
+)
+
+
+def build_cross_branch_adjudicator_prompt(
+    claims: Sequence[Any],
+    syntheses: dict[str, str],
+    evidence: Sequence[Any],
+) -> tuple[str, str]:
+    """Builds the adjudicator prompt for one packet of claims.
+
+    The syntheses travel verbatim in their own languages, alongside the evidence registry listing and the claims with
+    each branch's passage. Both the verdict schema and the closing control envelope are spelled out, so the reply is
+    machine-readable whatever language the prose around it uses.
+    """
+    parts: list[str] = ["[CROSS-BRANCH ADJUDICATION]"]
+    for branch, synthesis in syntheses.items():
+        parts.append(f"\n[BRANCH {branch}]\n{synthesis}")
+    parts.append("\n[EVIDENCE]")
+    for span in evidence:
+        parts.append(f"\n{span.id} ({span.origin}): {span.text}")
+    parts.append("\n[CLAIMS]")
+    for claim in claims:
+        parts.append(f"\n{claim.key}: {claim.text}")
+        for branch, passage in claim.by_branch.items():
+            parts.append(f"\n  {branch}: {passage or '(omitted)'}")
+    parts.append(
+        "\n\nReply with one JSON object on a single line, then the envelope:\n"
+        '{"crossfire_adjudication": {"verdicts": [{"claim": "<claim key>", "state": "'
+        + "|".join(_ADJUDICATION_STATES)
+        + '", "by_branch": {"<language>": "<verbatim passage or empty>"}, "evidence_ids": ["<id>", ...]}]}}\n'
+        'CROSSFIRE-ADJUDICATION {"claims": <integer>, "unavailable": <integer>}\n'
+        "The envelope is the last line, with ASCII keys and whole numbers."
+    )
+    return _ADJUDICATOR_SYSTEM, "".join(parts)
+
+
+def _json_object_with_key(text: str, key: str) -> dict[str, Any] | None:
+    """Returns the first JSON object carrying *key* at the top level, on its own line or inside a fence."""
+    for line in text.split("\n"):
+        candidate = line.strip()
+        if key not in candidate:
+            continue
+        try:
+            parsed = json.loads(candidate)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if isinstance(parsed, dict) and isinstance(parsed.get(key), dict):
+            payload: dict[str, Any] = parsed[key]
+            return payload
+    return None
+
+
+def parse_cross_branch_verdicts(text: str) -> list[CrossBranchVerdict]:
+    """Parses the verdicts out of an adjudicator reply.
+
+    Raises :class:`EnvelopeError` when the reply carries no adjudication object, when a state is outside the closed enum
+    or when a verdict names no claim. A caller that cannot parse a reply records ``adjudication_incomplete`` rather than
+    publishing a comparison it did not get.
+    """
+    payload = _json_object_with_key(text, _ADJUDICATION_KEY)
+    if payload is None:
+        raise EnvelopeError("No crossfire_adjudication object found in the adjudicator reply.")
+
+    verdicts: list[CrossBranchVerdict] = []
+    entries = payload.get("verdicts")
+    if not isinstance(entries, list):
+        raise EnvelopeError("The crossfire_adjudication object carries no verdicts list.")
+    for entry in entries:
+        if not isinstance(entry, dict):
+            raise EnvelopeError("A verdict is not a JSON object.")
+        claim = str(entry.get("claim", "")).strip()
+        if not claim:
+            raise EnvelopeError("A verdict must name its claim.")
+        state_text = str(entry.get("state", ""))
+        if state_text not in _ADJUDICATION_STATES:
+            raise EnvelopeError(
+                f"Unknown verdict state {state_text!r}. Known states: {', '.join(_ADJUDICATION_STATES)}"
+            )
+        raw_by_branch = entry.get("by_branch") or {}
+        raw_ids = entry.get("evidence_ids") or []
+        if not isinstance(raw_by_branch, dict) or not isinstance(raw_ids, list):
+            raise EnvelopeError("A verdict's by_branch must be an object and its evidence_ids a list.")
+        verdicts.append(
+            CrossBranchVerdict(
+                claim=claim,
+                state=VerdictState(state_text),
+                by_branch={str(branch): str(passage) for branch, passage in raw_by_branch.items()},
+                evidence_ids=[str(span_id) for span_id in raw_ids],
+            )
+        )
+    return verdicts
 
 
 _TRANSLATOR_SYSTEM = (
