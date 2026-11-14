@@ -1,0 +1,30 @@
+# A configuration for the offline CLI test: six model slugs, two languages, one render.
+# All models are served by the fake transport in tests/fakes/transport.py.
+
+provider = "opencode"
+
+[models.generators]
+names = ["gen-a"]
+context_window = 16000
+
+[models.reviewers]
+names = ["rev-a"]
+context_window = 16000
+
+[models.synthesizer]
+names = ["synth-a"]
+context_window = 32000
+max_output_tokens = 4096
+
+[models.translator]
+names = ["trans-a"]
+context_window = 16000
+
+[models.adjudicator]
+names = ["adj-a"]
+context_window = 200000
+
+[language]
+source = "en"
+branches = ["en", "de"]
+render_language = "en"

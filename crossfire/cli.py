@@ -8,11 +8,13 @@ import shutil
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import click
 
 from crossfire.core.archive import RunArchive
 from crossfire.core.config import load_configuration
+from crossfire.core.detection import LanguageDetectionError, resolve_source_language
 from crossfire.core.domain import CostEstimate, CrossfireConfiguration, Mode, RunParameters, Task
 from crossfire.core.logging import set_stderr_level
 from crossfire.core.orchestrator import Orchestrator, RunFailedError
@@ -99,6 +101,48 @@ def cli() -> None:
     default=None,
     help="Inference gateway: opencode (default), opencode-go, openrouter, or synthetic. Overrides crossfire.toml.",
 )
+@click.option(
+    "--language-branch",
+    "language_branches",
+    multiple=True,
+    default=None,
+    help="Language tag of one branch. Repeat for more branches; overrides [language].",
+)
+@click.option(
+    "--source-language",
+    default=None,
+    help="Language of the instruction, or 'auto' for offline detection.",
+)
+@click.option(
+    "--competence-branch",
+    default=None,
+    help="Branch that carries the run's own language competence.",
+)
+@click.option(
+    "--render-language",
+    default=None,
+    help="Language of the assembled render. Omit for no render.",
+)
+@click.option(
+    "--no-translate-instruction",
+    "no_translate_instruction",
+    is_flag=True,
+    default=False,
+    help="Run every branch on the original instruction.",
+)
+@click.option(
+    "--no-adjudicate",
+    "no_adjudicate",
+    is_flag=True,
+    default=False,
+    help="Skip cross-branch adjudication.",
+)
+@click.option(
+    "--resume",
+    is_flag=True,
+    default=False,
+    help="Resume a run from the journal in --run-dir, skipping units whose artefacts still match.",
+)
 def run(
     mode: str,
     instruction: str | None,
@@ -116,6 +160,13 @@ def run(
     run_dir: str | None,
     configuration_path: str | None,
     provider: str | None,
+    language_branches: tuple[str, ...],
+    source_language: str | None,
+    competence_branch: str | None,
+    render_language: str | None,
+    no_translate_instruction: bool,
+    no_adjudicate: bool,
+    resume: bool,
 ) -> None:
     """Runs the Crossfire pipeline."""
     if not verbose:
@@ -144,6 +195,26 @@ def run(
     if context_file:
         context = Path(context_file).read_text(encoding="utf-8")
 
+    language_cli: dict[str, Any] = {}
+    if language_branches:
+        language_cli["branches"] = list(language_branches)
+    if source_language:
+        language_cli["source"] = source_language
+    if competence_branch:
+        language_cli["competence_branch"] = competence_branch
+    if render_language:
+        language_cli["render_language"] = render_language
+    if no_translate_instruction:
+        language_cli["translate_instruction"] = False
+    if no_adjudicate:
+        language_cli["adjudicate"] = False
+    if language_cli.get("source") == "auto":
+        try:
+            language_cli["source"] = resolve_source_language("auto", effective_instruction)
+        except LanguageDetectionError as exception:
+            click.echo(f"Configuration error: {exception}", err=True)
+            sys.exit(1)
+
     task = Task(instruction=effective_instruction, context=context)
 
     parameters = RunParameters(
@@ -156,6 +227,8 @@ def run(
         enrich=enrich,
         early_stop=early_stop,
         early_stop_threshold=early_stop_threshold,
+        language_cli=language_cli,
+        resume=resume,
     )
 
     errors = configuration.validate(parameters.num_generators, parameters.num_reviewers_per_candidate)
