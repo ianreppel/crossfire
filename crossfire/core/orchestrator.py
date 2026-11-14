@@ -334,6 +334,13 @@ class Orchestrator:
             if self._archive:
                 self._archive.claim_owner(adopt_stale=self.parameters.resume)
                 self._archive.save_original_instruction(original_instruction)
+                self._archive.journal.append(
+                    "run_started",
+                    mode=self.parameters.mode.value,
+                    branches=list(self.language.branches),
+                    source=self.language.source,
+                    resume=self.parameters.resume,
+                )
 
             branches = self._build_branches(self.configuration)
             if len(branches) >= 2 and self.language.adjudicate and not self.configuration.adjudicator.names:
