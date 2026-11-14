@@ -87,3 +87,10 @@ class TestLanguageValidation:
 
         assert any("bcp-47" in error.lower() or "malformed" in error.lower() for error in errors), errors
         assert validate_language(LanguageConfiguration(branches=("en", "zh-Hant", "pt-BR"))) == []
+
+    def test_competence_branch_must_be_in_branches(self) -> None:
+        errors = validate_language(LanguageConfiguration(branches=("en",), competence_branch="de"))
+
+        assert any("competence_branch" in error for error in errors), errors
+        assert validate_language(LanguageConfiguration(branches=("en", "de"), competence_branch="de")) == []
+        assert validate_language(LanguageConfiguration(branches=("en",), source="pt")) == []

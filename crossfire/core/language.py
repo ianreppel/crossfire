@@ -120,4 +120,13 @@ def validate_language(configuration: LanguageConfiguration) -> list[str]:
     malformed: list[str] = [branch for branch in branches if not _LANGUAGE_TAG_REGEX.match(branch)]
     if malformed:
         errors.append(f"language.branches has malformed BCP-47 tags: {', '.join(malformed)}")
+
+    # The source language is deliberately independent of the branch list: a Portuguese question may run one English
+    # branch and render back to Portuguese. The competence branch is not, because it must name a branch that exists.
+    competence_branch = configuration.competence_branch
+    if competence_branch is not None and competence_branch not in branches:
+        errors.append(
+            f"language.competence_branch '{competence_branch}' is not one of language.branches "
+            f"({', '.join(branches) or 'none'})"
+        )
     return errors
