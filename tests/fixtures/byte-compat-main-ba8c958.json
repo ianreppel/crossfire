@@ -1,0 +1,33 @@
+{
+ "answer": "## Answer\n\nA synthesized answer that cites [1] one source.",
+ "answer_digest": "169615fef1ea5fbc",
+ "requests": [
+  {
+   "role": "generator",
+   "model": "gen-a",
+   "user": "77de72eee0a48bd1",
+   "system": "bee5a3104f962b3c"
+  },
+  {
+   "role": "reviewer",
+   "model": "rev-a",
+   "user": "547d585e4255974c",
+   "system": "51111e7dd53ed183"
+  },
+  {
+   "role": "synthesizer",
+   "model": "synth-a",
+   "user": "e44c6b3b85006646",
+   "system": "765503b61f816ff2"
+  }
+ ],
+ "files": {
+  "final.md": "169615fef1ea5fbc",
+  "meta.json": "0fdf5a84fa14519c",
+  "original-instruction.md": "b5ee0a5b66daa79b",
+  "round-1/candidate-0-gen-a.md": "aa655fa587a28ce7",
+  "round-1/review-c0-rev-a.md": "84e76942b492a337",
+  "round-1/synthesis.md": "169615fef1ea5fbc"
+ },
+ "baseline_commit": "ba8c958f4787d22194c4e4c4ce3addda1cbcd575"
+}
