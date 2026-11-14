@@ -104,7 +104,7 @@ class TestLanguageValidation:
             load_configuration(configuration_path=path)
 
     def test_an_unimplemented_translator_backend_is_a_config_error(self) -> None:
-        errors = validate_language(LanguageConfiguration(translator_backend="deepl"))
+        errors = validate_language(LanguageConfiguration(translator_backend="vendor-x"))
 
         assert any("translator_backend" in error for error in errors), errors
         assert validate_language(LanguageConfiguration(translator_backend="llm")) == []

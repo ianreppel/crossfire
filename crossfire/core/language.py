@@ -14,8 +14,8 @@ from typing import Any
 from crossfire.core.domain import LanguageConfiguration
 from crossfire.core.presets import UnknownPresetError, expand_preset
 
-# Translation backends this build can drive. DeepL is named in the configuration surface but is not implemented here,
-# so configuring it fails before any call rather than silently translating with the LLM backend.
+# Translation backends this build can drive. The LLM backend is the only one: a named vendor backend was dropped by
+# owner order because it costs money and the LLM path already covers translation.
 TRANSLATOR_BACKENDS: tuple[str, ...] = ("llm",)
 
 # A BCP-47 language tag: a two- or three-letter primary subtag, then optional alphanumeric subtags.
