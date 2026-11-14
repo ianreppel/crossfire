@@ -63,10 +63,12 @@ class TestBranchPipeline:
         assert (tmp_path / "branches" / "en" / "instruction.md").read_text(encoding="utf-8") == english_instruction
         assert (tmp_path / "original-instruction.md").read_text(encoding="utf-8") == instruction
 
-# The output and layout this run produced before the dual-language work started, captured from a894f86.
+# The output and layout this run produced before the dual-language work started, captured from a894f86. The journal is
+# additive: the plan's rollback section allows new archive files, so the guard is the synthesis bytes plus the layout.
 GOLDEN_SHA256 = "77d5b8f3c360206843269cc4d015bf1f34d4bbbbd7d70397306b2c072fd31b59"
 GOLDEN_FILES = {
     "final.md",
+    "journal.jsonl",
     "meta.json",
     "original-instruction.md",
     "round-1/candidate-0-gen-a.md",
