@@ -61,3 +61,15 @@ class TestLanguageConfiguration:
         assert resolved.branches == ("en", "ko")
         assert resolved.preset is None
         assert provenance["branches"] == "cli"
+
+    def test_mode_preset_beats_global_branches(self) -> None:
+        resolved, provenance = resolve_language(
+            cli=None,
+            mode_override={"preset": "multilingual"},
+            global_={"branches": ["en"], "source": "en"},
+        )
+
+        assert resolved.branches == ("en", "zh", "de", "ja", "fr")
+        assert resolved.preset == "multilingual"
+        assert provenance["branches"] == "mode"
+        assert provenance["source"] == "global"

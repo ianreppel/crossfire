@@ -59,16 +59,22 @@ def resolve_language(
 
     preset_value = merged.get("preset")
     preset: str | None = str(preset_value) if preset_value is not None else None
-    if "branches" in merged:
-        branches = tuple(str(branch) for branch in merged["branches"])
-        preset = None
-        branch_layer = supplied["branches"]
-    elif preset is not None:
-        branches = _expanded(preset, defaults.branches)
-        branch_layer = supplied["preset"]
-    else:
-        branches = defaults.branches
-        branch_layer = "default"
+    branches = defaults.branches
+    branch_layer = "default"
+    # The branch decision belongs to one layer, not to the merged view: a preset expands at the layer that named it,
+    # so a global branch list cannot silently defeat a mode-level preset.
+    for layer_name, layer in layers:
+        data = layer or {}
+        if "branches" in data:
+            branches = tuple(str(branch) for branch in data["branches"])
+            preset = None
+            branch_layer = layer_name
+            break
+        if "preset" in data:
+            preset = str(data["preset"])
+            branches = _expanded(preset, defaults.branches)
+            branch_layer = layer_name
+            break
 
     competence_branch = merged.get("competence_branch")
     render_language = merged.get("render_language")
