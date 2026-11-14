@@ -17,10 +17,12 @@ from crossfire.core.archive import RunArchive
 from crossfire.core.compression import compress_prompt_components
 from crossfire.core.config import get_api_key
 from crossfire.core.domain import (
+    Branch,
     Candidate,
     CostEntry,
     CostTracker,
     CrossfireConfiguration,
+    LanguageConfiguration,
     ModelGroup,
     Phase,
     Review,
@@ -31,6 +33,8 @@ from crossfire.core.domain import (
     Task,
 )
 from crossfire.core.exclamations import exclaim
+from crossfire.core.hashing import sha256_text
+from crossfire.core.language import resolve_language
 from crossfire.core.pricing import PRICING_FILENAME, load_pricing
 from crossfire.core.progress import NoOpProgress, ProgressCallback
 from crossfire.core.prompts import (
@@ -90,6 +94,7 @@ _FATAL_ERRORS: tuple[type[Exception], ...] = (AuthenticationError, InsufficientC
 
 ROLE_TO_PHASE: dict[Role, Phase] = {
     Role.ENRICHER: Phase.ENRICHMENT,
+    Role.TRANSLATOR: Phase.TRANSLATE,
     Role.GENERATOR: Phase.GENERATION,
     Role.REVIEWER: Phase.REVIEW,
     Role.SYNTHESIZER: Phase.SYNTHESIS,
@@ -141,6 +146,64 @@ class Orchestrator:
         self._searches_performed: list[dict[str, str | int]] = []
         self._session_id = f"crossfire-{uuid4()}"
         self._pricing: dict[str, tuple[float, float]] | None = None
+        self.language, self.language_provenance = self._resolve_language(configuration)
+
+    # -- language surface ---
+
+    @staticmethod
+    def _global_language_layer(configuration: CrossfireConfiguration) -> dict[str, Any]:
+        """Returns the explicit global language layer, falling back to the resolved global view.
+
+        A configuration built in code rather than parsed from TOML carries its global values on ``language`` alone, and
+        that view is exactly what the global layer means for an empty ``[language]`` section.
+        """
+        if configuration.language_layer:
+            return configuration.language_layer
+        resolved = configuration.language
+        return {
+            "source": resolved.source,
+            "branches": list(resolved.branches),
+            "preset": resolved.preset,
+            "competence_branch": resolved.competence_branch,
+            "render_language": resolved.render_language,
+            "translate_instruction": resolved.translate_instruction,
+            "adjudicate": resolved.adjudicate,
+            "translator_backend": resolved.translator_backend,
+        }
+
+    def _resolve_language(self, configuration: CrossfireConfiguration) -> tuple[LanguageConfiguration, dict[str, str]]:
+        """Resolves this run's language configuration from the CLI, mode and global layers."""
+        return resolve_language(
+            cli=self.parameters.language_cli,
+            mode_override=configuration.language_modes.get(self.parameters.mode.value),
+            global_=self._global_language_layer(configuration),
+        )
+
+    def _build_branches(self, configuration: CrossfireConfiguration) -> list[Branch]:
+        """Builds one pending branch per configured language.
+
+        The branch whose language is the source carries the original instruction, attested with its own hash and an
+        empty model id. Every other branch starts empty and is translated by :meth:`_translate_instruction`.
+        """
+        original = self.parameters.task.instruction
+        branches: list[Branch] = []
+        for tag in self.language.branches:
+            branch = Branch(language=tag, is_competence_branch=tag == self.language.competence_branch)
+            if tag == self.language.source:
+                branch = replace(branch, instruction_text=original, instruction_hash=sha256_text(original))
+            branches.append(branch)
+        return branches
+
+    async def _translate_instruction(self, branch: Branch) -> Branch:
+        """Returns *branch* with its instruction ready for enrichment.
+
+        Translation is skipped only when the branch language equals the source language, never on a guess. The source
+        branch therefore spends no translation call and is attested as its own original.
+        """
+        if branch.instruction_text:
+            return branch
+        original = self.parameters.task.instruction
+        return replace(branch, instruction_text=original, instruction_hash=sha256_text(original))
 
     # -- high-level entry point ---
 

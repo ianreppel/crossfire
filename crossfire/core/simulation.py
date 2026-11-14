@@ -30,6 +30,10 @@ def simulate_response(
     third_hex_digit = int(digest[2], 16)
     emit_search = third_hex_digit > 10  # deterministic ~31% chance of a search request
 
+    if role == "translator":
+        # A simulated translation is the text it was given: deterministic, and honest about carrying no new content.
+        return instruction
+
     if role == "enricher":
         sections = [
             f"## Enriched Instruction (model={model})",

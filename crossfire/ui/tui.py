@@ -23,9 +23,12 @@ from crossfire.core.domain import CostEstimate, Phase, RunParameters, strip_prov
 
 _PHASE_LABELS: dict[Phase, tuple[str, str]] = {
     Phase.ENRICHMENT: ("Enriching", "blue"),
+    Phase.TRANSLATE: ("Translating", "green"),
     Phase.GENERATION: ("Generating", "cyan"),
     Phase.REVIEW: ("Reviewing", "magenta"),
     Phase.SYNTHESIS: ("Synthesizing", "yellow"),
+    Phase.ADJUDICATE: ("Adjudicating", "red"),
+    Phase.RENDER: ("Rendering", "white"),
 }
 
 _MAX_PHASE_LABEL_LENGTH: int = max(len(label) for label, _ in _PHASE_LABELS.values()) + 1

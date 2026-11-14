@@ -18,6 +18,7 @@ from crossfire.core.domain import (
     SearchConfiguration,
     Task,
 )
+from tests.fakes.transport import FakeTransport, install_fake_transport
 
 
 @pytest.fixture()
@@ -78,3 +79,9 @@ def sample_review() -> Review:
         round=1,
         candidate_index=0,
     )
+
+
+@pytest.fixture(autouse=True)
+def fake_transport(monkeypatch: pytest.MonkeyPatch) -> FakeTransport:
+    """Routes every provider call in every test through the offline fake transport."""
+    return install_fake_transport(monkeypatch)

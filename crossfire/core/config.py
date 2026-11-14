@@ -242,6 +242,7 @@ def load_configuration(
         limits=limits,
         mode_overrides=mode_overrides,
         language=_parse_language_section(language_section),
+        language_layer={key: value for key, value in language_section.items() if key != "modes"},
         language_modes=_parse_language_modes(language_section),
     )
 

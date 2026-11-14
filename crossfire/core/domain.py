@@ -14,21 +14,25 @@ from crossfire.core.tokens import compute_token_budget
 
 
 class Role(enum.StrEnum):
-    """LLM role within a round: enricher, generator, reviewer, synthesizer"""
+    """LLM role within a round, plus the two roles that work across branches"""
 
     ENRICHER = "enricher"
     GENERATOR = "generator"
     REVIEWER = "reviewer"
     SYNTHESIZER = "synthesizer"
+    TRANSLATOR = "translator"
 
 
 class Phase(enum.StrEnum):
-    """Sequential phase within a round (plus an (optional) preparatory enrichment step)"""
+    """Sequential phase within a round, plus the phases that bracket the whole run"""
 
     ENRICHMENT = "enrichment"
+    TRANSLATE = "translate"
     GENERATION = "generation"
     REVIEW = "review"
     SYNTHESIS = "synthesis"
+    ADJUDICATE = "adjudicate"
+    RENDER = "render"
 
 
 class Mode(enum.StrEnum):
@@ -133,6 +137,7 @@ class Task:
 
     instruction: str
     context: str = ""
+    language: str = "en"
 
 
 @dataclass
@@ -144,6 +149,7 @@ class Candidate:
     round: int
     index: int
     search_results: str = ""
+    language: str = "en"
 
     @property
     def label(self) -> str:
@@ -159,6 +165,7 @@ class Review:
     round: int
     candidate_index: int
     search_results: str = ""
+    language: str = "en"
 
     @property
     def label(self) -> str:
@@ -183,6 +190,7 @@ class SynthesisResult:
     round: int
     attributions: list[CandidateDecision] = field(default_factory=list)
     notes: str = ""
+    language: str = "en"
 
     @property
     def selected_candidates(self) -> list[int]:
@@ -256,12 +264,14 @@ class LimitsConfiguration:
 
     def temperature_for(self, role: Role) -> float:
         """Returns the configured sampling temperature for *role* (frontier models ignore it entirely)."""
-        return {
+        temperatures = {
             Role.ENRICHER: self.temperature_enricher,
             Role.GENERATOR: self.temperature_generators,
             Role.REVIEWER: self.temperature_reviewers,
             Role.SYNTHESIZER: self.temperature_synthesizer,
-        }[role]
+            Role.TRANSLATOR: 0.0,
+        }
+        return temperatures.get(role, self.temperature_reviewers)
 
     def reasoning_effort_for(self, role: Role) -> str:
         """Returns the configured reasoning effort for *role*, or ``""`` when unset."""
@@ -279,6 +289,37 @@ class ModelGroupOverrides:
     reviewers: ModelGroup | None = None
     synthesizer: ModelGroup | None = None
     enricher: ModelGroup | None = None
+
+
+class BranchState(enum.StrEnum):
+    """Lifecycle of one language branch: from pending to a synthesis, or to a named failure."""
+
+    PENDING = "pending"
+    TRANSLATED = "translated"
+    ENRICHED = "enriched"
+    ROUNDS = "rounds"
+    SYNTHESIZED = "synthesized"
+    TRANSLATION_FAILED = "translation_failed"
+    BRANCH_FAILED = "branch_failed"
+
+
+@dataclass(frozen=True)
+class Branch:
+    """One full pass of the pipeline in one language, with its own attested instruction.
+
+    ``instruction_model`` is empty for the source branch: nothing was translated there, and the record says so rather
+    than naming a model that never ran. ``is_competence_branch`` marks the branch that carries the run's own language
+    competence; it changes no behaviour, because Crossfire has no language competence gate.
+    """
+
+    language: str
+    instruction_text: str = ""
+    instruction_model: str = ""
+    instruction_hash: str = ""
+    enriched_text: str = ""
+    enriched_hash: str = ""
+    is_competence_branch: bool = False
+    state: BranchState = BranchState.PENDING
 
 
 @dataclass(frozen=True)
@@ -326,6 +367,7 @@ class CrossfireConfiguration:
     limits: LimitsConfiguration = field(default_factory=LimitsConfiguration)
     mode_overrides: dict[str, ModelGroupOverrides] = field(default_factory=dict)
     language: LanguageConfiguration = field(default_factory=LanguageConfiguration)
+    language_layer: dict[str, Any] = field(default_factory=dict)
     language_modes: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     def active_provider(self) -> ProviderConfiguration:
@@ -500,6 +542,7 @@ class RunParameters:
     enrich: bool = True
     early_stop: bool = True
     early_stop_threshold: int = 1
+    language_cli: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
