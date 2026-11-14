@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from crossfire.core.detection import detect_language
+from crossfire.core.detection import LanguageDetectionError, detect_language, resolve_source_language
 
 
 class TestScriptRanges:
@@ -33,3 +33,15 @@ class TestStopwordScoring:
         assert detect_language(portuguese).language == "pt"
         assert detect_language(spanish).language == "es"
         assert detect_language(german).language == "de"
+
+
+class TestMarginRule:
+    def test_thin_margin_requires_explicit_language(self) -> None:
+        code_mixed = "Il governo disse que a decisão do tribunal sobre os desaparecidos é la misma."
+        spanish = "El gobierno dijo que no va a comentar la decisión del tribunal."
+
+        assert detect_language(code_mixed).language == ""
+        with pytest.raises(LanguageDetectionError):
+            resolve_source_language("auto", code_mixed)
+        assert resolve_source_language("pt", code_mixed) == "pt"
+        assert resolve_source_language("auto", spanish) == "es"

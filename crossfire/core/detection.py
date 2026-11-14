@@ -69,6 +69,10 @@ _STOPWORDS: dict[str, frozenset[str]] = {
 _STOPWORD_MINIMUM_SCORE = 0.05
 
 
+class LanguageDetectionError(ValueError):
+    """Raised when offline detection cannot separate two languages well enough to be used."""
+
+
 @dataclass(frozen=True)
 class DetectionResult:
     """Outcome of offline detection: the best language, the margin, and the ranked candidates."""
@@ -156,3 +160,21 @@ def detect_language(text: str) -> DetectionResult:
         return DetectionResult(language=top_language, confidence=confidence, candidates=ranked)
 
     return _score_stopwords(text)
+
+
+def resolve_source_language(source: str, text: str) -> str:
+    """Returns the source language for *text*: the configured tag, or the offline detection when it is ``"auto"``.
+
+    Detection never calls a model. A thin margin is an error rather than a guess, because a wrong source language
+    either wastes a translation or, worse, records one language's prose as another's evidence.
+    """
+    if source != "auto":
+        return source
+    result = detect_language(text)
+    if not result.language:
+        ranked = ", ".join(f"{language}={score:.2f}" for language, score in result.candidates)
+        raise LanguageDetectionError(
+            "Source detection is not confident enough to pick a language. "
+            f"Pass --source-language explicitly. Candidates: {ranked or 'none'}"
+        )
+    return result.language
