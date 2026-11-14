@@ -22,3 +22,14 @@ class TestScriptRanges:
 
         assert result.language == ""
         assert result.confidence == pytest.approx(0.0)
+
+
+class TestStopwordScoring:
+    def test_stopwords_separate_pt_from_es_and_de(self) -> None:
+        portuguese = "O governo disse que não vai comentar a decisão do tribunal sobre os desaparecidos."
+        spanish = "El gobierno dijo que no va a comentar la decisión del tribunal sobre los desaparecidos."
+        german = "Die Regierung sagte, dass sie die Entscheidung des Gerichts nicht kommentieren wird."
+
+        assert detect_language(portuguese).language == "pt"
+        assert detect_language(spanish).language == "es"
+        assert detect_language(german).language == "de"
