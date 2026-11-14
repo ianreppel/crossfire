@@ -469,13 +469,14 @@ class Orchestrator:
         unavailable = sum(1 for verdict in verdicts if verdict.state is not VerdictState.AGREES)
         log.log_adjudication(packets=len(packets), verdicts=len(verdicts), unavailable=unavailable)
         if self._archive:
-            self._archive.journal.append(
-                "adjudicated",
-                packets=len(packets),
-                incomplete=incomplete,
-                verdicts=len(verdicts),
-                path="cross-branch.md",
-            )
+            adjudication_record: dict[str, Any] = {
+                "packets": len(packets),
+                "incomplete": incomplete,
+                "verdicts": len(verdicts),
+            }
+            if verdicts:
+                adjudication_record["path"] = "cross-branch.md"
+            self._archive.journal.append("adjudicated", **adjudication_record)
         return verdicts, render_cross_branch(verdicts, syntheses=syntheses, adjudicator=model, incomplete=incomplete)
 
     async def _render_output(
