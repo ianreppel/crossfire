@@ -460,13 +460,18 @@ class Orchestrator:
         """
         render_language = self.language.render_language or self.language.source
         branches = [context.branch.language for context in contexts]
+        # A fixed ASCII label, never translated: it is the machine-readable record that this file is a rendering.
+        marker = (
+            f'CROSSFIRE-RENDER {{"language": "{render_language}", "attested": false, '
+            f'"branches": {json.dumps(branches)}, "claims": {len(verdicts)}}}'
+        )
         header = (
             f"# Crossfire render ({render_language})\n\n"
             "This file is a non-attested translation assembled from the cross-branch comparison. "
             "It is not evidence and it is not any one branch's synthesis.\n\n"
             f"Branches: {', '.join(branches)}. Claims compared: {len(verdicts)}."
         )
-        lines: list[str] = [await self._translate_render_prose(header, render_language)]
+        lines: list[str] = [marker, "", await self._translate_render_prose(header, render_language)]
         for verdict in verdicts:
             prose = f"## {verdict.claim}\n\nState: {verdict.state.value}."
             lines.append("")

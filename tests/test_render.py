@@ -47,3 +47,19 @@ class TestRender:
         assert "disagrees" in render
         assert render != ENGLISH_ANSWER, "a render is not one branch's synthesis"
         assert render != GERMAN_ANSWER
+
+
+    @pytest.mark.asyncio
+    async def test_render_is_marked_non_attested_and_leaves_outputs_intact(
+        self, fake_transport: FakeTransport, tmp_path: Path
+    ) -> None:
+        await run_two_branch_adjudication(fake_transport, tmp_path, render_language="de")
+
+        render = (tmp_path / "render" / "de.md").read_text(encoding="utf-8")
+
+        assert 'CROSSFIRE-RENDER {"language": "de", "attested": false' in render, (
+            "the render carries a fixed ASCII label, never a translated one"
+        )
+        assert (tmp_path / "branches" / "en" / "output.md").read_text(encoding="utf-8") == ENGLISH_ANSWER.strip()
+        assert (tmp_path / "branches" / "de" / "output.md").read_text(encoding="utf-8") == GERMAN_ANSWER.strip()
+        assert (tmp_path / "final.md").read_text(encoding="utf-8") == render, "the run's output is the render"
