@@ -4,46 +4,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import httpx
 import pytest
 
-from crossfire.core.archive import RunArchive
-from crossfire.core.domain import (
-    BranchState,
-    CrossfireConfiguration,
-    LanguageConfiguration,
-    LimitsConfiguration,
-    Mode,
-    ModelGroup,
-    RunParameters,
-    SearchConfiguration,
-    Task,
-)
+from crossfire.core.domain import BranchState
 from crossfire.core.hashing import sha256_text
-from crossfire.core.orchestrator import Orchestrator
 from tests.fakes.transport import FakeTransport
-
-
-def two_branch_configuration() -> CrossfireConfiguration:
-    """A configuration whose source is English and whose branches are English and German."""
-    return CrossfireConfiguration(
-        generators=ModelGroup(names=("gen-a",), context_window=16000),
-        reviewers=ModelGroup(names=("rev-a",), context_window=16000),
-        synthesizer=ModelGroup(names=("synth-a",), context_window=32000),
-        translator=ModelGroup(names=("trans-a",), context_window=16000),
-        search=SearchConfiguration(enabled=False),
-        limits=LimitsConfiguration(max_concurrent_requests=2),
-        language=LanguageConfiguration(source="en", branches=("en", "de")),
-    )
-
-
-def orchestrator_for(instruction: str, archive_base: Path) -> Orchestrator:
-    """Builds an orchestrator over one round, ready to translate through the fake transport."""
-    parameters = RunParameters(mode=Mode.RESEARCH, task=Task(instruction=instruction), num_rounds=1)
-    orchestrator = Orchestrator(two_branch_configuration(), parameters, archive=RunArchive(archive_base))
-    orchestrator._api_key = "offline-test-key"
-    orchestrator._http_client = httpx.AsyncClient()
-    return orchestrator
+from tests.helpers import orchestrator_for
 
 
 class TestInstructionTranslation:

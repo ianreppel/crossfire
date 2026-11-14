@@ -2,17 +2,21 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
+from crossfire.core.domain import BranchState
 from crossfire.core.translation import (
-    FidelityError,
     assert_fidelity,
     extract_do_not_translate,
     fidelity_violations,
     restore_do_not_translate,
 )
+from tests.fakes.transport import FakeTransport
+from tests.helpers import orchestrator_for
 
-JAPANESE_REFERENCE = "[3] 洞 富雄, 「南京アッサム日記」, 文芸春秋, 1998."
+JAPANESE_REFERENCE = "[3] 洞 富雄, 「南京アッサム日記」, 文藝春秋, 1998."
 
 
 class TestCitationPassthrough:
@@ -30,12 +34,18 @@ class TestCitationPassthrough:
         assert fidelity_violations(source, translated, spans) == []
         assert_fidelity(source, translated, spans)
 
-    def test_translation_that_drops_a_span_fails_the_gate(self) -> None:
-        source = f"The death toll is disputed in the sources.\n{JAPANESE_REFERENCE}"
-        _, spans = extract_do_not_translate(source)
+    @pytest.mark.asyncio
+    async def test_render_that_translates_a_title_fails_the_gate(
+        self, fake_transport: FakeTransport, tmp_path: Path
+    ) -> None:
+        instruction = f"Summarise the disputed toll.\n{JAPANESE_REFERENCE}"
+        rendered = "[3] Nobuo Doi, Nanjing Assam Diary, Bungeishunju, 1998."
+        fake_transport.queue("translator", f"Fassen Sie die umstrittene Opferzahl zusammen.\n{rendered}")
+        orchestrator = orchestrator_for(instruction, tmp_path)
 
-        violations = fidelity_violations(source, "Die Opferzahl ist umstritten.", spans)
+        branch = await orchestrator._translate_instruction(orchestrator._build_branches(orchestrator.configuration)[1])
 
-        assert violations, "a translation that drops the reference must fail the gate"
-        with pytest.raises(FidelityError):
-            assert_fidelity(source, "Die Opferzahl ist umstritten.", spans)
+        assert branch.state is BranchState.TRANSLATION_FAILED
+        assert branch.instruction_text == ""
+        translate_prompt = fake_transport.texts("translator")[0]
+        assert JAPANESE_REFERENCE not in translate_prompt, "the reference line must never reach the translator"

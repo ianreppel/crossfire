@@ -71,6 +71,11 @@ from crossfire.core.search import (
 )
 from crossfire.core.simulation import simulate_response
 from crossfire.core.tokens import estimate_tokens
+from crossfire.core.translation import (
+    extract_do_not_translate,
+    fidelity_violations,
+    restore_do_not_translate,
+)
 
 MAX_CONSECUTIVE_ROUND_FAILURES = 2
 
@@ -211,7 +216,8 @@ class Orchestrator:
             return replace(branch, instruction_text=original, instruction_hash=sha256_text(original))
 
         model = self.configuration.translator.names[0]
-        system, user = build_translation_prompt(f"{self.language.source}->{branch.language}", original)
+        masked, spans = extract_do_not_translate(original)
+        system, user = build_translation_prompt(f"{self.language.source}->{branch.language}", masked)
         try:
             text = await self._call_llm(
                 model=model,
@@ -236,6 +242,17 @@ class Orchestrator:
                 error="the translator returned an empty instruction",
             )
             return replace(branch, state=BranchState.TRANSLATION_FAILED)
+
+        # Citations, numbers and identifiers must come back byte-identical, or the branch is not usable.
+        violations = fidelity_violations(masked, translated, spans)
+        if violations:
+            log.log_translation_failed(
+                branch=branch.language,
+                model=model,
+                error="fidelity: " + "; ".join(violations),
+            )
+            return replace(branch, state=BranchState.TRANSLATION_FAILED)
+        translated = restore_do_not_translate(translated, spans)
         if self._archive:
             self._archive.save_branch_instruction(branch.language, translated)
         return replace(

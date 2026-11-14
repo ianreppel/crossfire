@@ -3,7 +3,23 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Any
+
+import httpx
+
+from crossfire.core.archive import RunArchive
+from crossfire.core.domain import (
+    CrossfireConfiguration,
+    LanguageConfiguration,
+    LimitsConfiguration,
+    Mode,
+    ModelGroup,
+    RunParameters,
+    SearchConfiguration,
+    Task,
+)
+from crossfire.core.orchestrator import Orchestrator
 
 
 class LogCapture(logging.Handler):
@@ -21,3 +37,33 @@ class LogCapture(logging.Handler):
             entry.update(record.data)  # type: ignore[attr-defined]
         if entry:
             self.records.append(entry)
+
+
+def two_branch_configuration(
+    *,
+    source: str = "en",
+    branches: tuple[str, ...] = ("en", "de"),
+) -> CrossfireConfiguration:
+    """A configuration whose source is *source* and whose branches are *branches*."""
+    return CrossfireConfiguration(
+        generators=ModelGroup(names=("gen-a",), context_window=16000),
+        reviewers=ModelGroup(names=("rev-a",), context_window=16000),
+        synthesizer=ModelGroup(names=("synth-a",), context_window=32000),
+        translator=ModelGroup(names=("trans-a",), context_window=16000),
+        search=SearchConfiguration(enabled=False),
+        limits=LimitsConfiguration(max_concurrent_requests=2),
+        language=LanguageConfiguration(source=source, branches=branches),
+    )
+
+
+def orchestrator_for(instruction: str, archive_base: Path, *, num_rounds: int = 1) -> Orchestrator:
+    """Builds an orchestrator over *num_rounds* rounds, ready to call models through the fake transport."""
+    parameters = RunParameters(
+        mode=Mode.RESEARCH,
+        task=Task(instruction=instruction),
+        num_rounds=num_rounds,
+    )
+    orchestrator = Orchestrator(two_branch_configuration(), parameters, archive=RunArchive(archive_base))
+    orchestrator._api_key = "offline-test-key"
+    orchestrator._http_client = httpx.AsyncClient()
+    return orchestrator
