@@ -51,11 +51,12 @@ class TestInstructionTranslation:
         assert translate_prompt.startswith("[TRANSLATE en->de]")
         assert instruction in translate_prompt
 
+    @pytest.mark.parametrize("reply", ["", "I cannot fulfill this request."])
     @pytest.mark.asyncio
     async def test_translation_refusal_marks_branch_translation_failed(
-        self, fake_transport: FakeTransport, tmp_path: Path
+        self, reply: str, fake_transport: FakeTransport, tmp_path: Path
     ) -> None:
-        fake_transport.queue("translator", "")
+        fake_transport.queue("translator", reply)
         orchestrator = orchestrator_for("Explain the Nanjing death toll with sources.", tmp_path)
 
         branch = await orchestrator._translate_instruction(orchestrator._build_branches(orchestrator.configuration)[1])

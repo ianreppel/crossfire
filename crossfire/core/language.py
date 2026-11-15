@@ -8,11 +8,12 @@ manifest can show it. No module, prompt or fixture hard-codes a language tag.
 from __future__ import annotations
 
 import re
-from dataclasses import fields
+from dataclasses import asdict, fields, replace
 from typing import Any
 
-from crossfire.core.domain import LanguageConfiguration
-from crossfire.core.presets import UnknownPresetError, expand_preset
+from crossfire.core.detection import resolve_source_language
+from crossfire.core.domain import CrossfireConfiguration, LanguageConfiguration, RunParameters
+from crossfire.core.presets import LANGUAGE_PRESETS, expand_preset
 
 # Translation backends this build can drive. The LLM backend is the only one: a named vendor backend was dropped by
 # owner order because it costs money and the LLM path already covers translation.
@@ -25,18 +26,6 @@ _LANGUAGE_TAG_REGEX: re.Pattern[str] = re.compile(r"^[A-Za-z]{2,3}(-[A-Za-z0-9]{
 _LANGUAGE_FIELDS: tuple[str, ...] = tuple(field.name for field in fields(LanguageConfiguration))
 
 Layer = dict[str, Any]
-
-
-def _expanded(preset: str, fallback: tuple[str, ...]) -> tuple[str, ...]:
-    """Expands *preset*, falling back to *fallback* when the preset is unknown.
-
-    An unknown preset is a configuration error and language validation reports it before any model call, so
-    resolution stays silent and total rather than raising halfway through a run.
-    """
-    try:
-        return expand_preset(preset)
-    except UnknownPresetError:
-        return fallback
 
 
 def resolve_language(
@@ -86,7 +75,7 @@ def resolve_language(
             break
         if data.get("preset") is not None:
             preset = str(data["preset"])
-            branches = _expanded(preset, defaults.branches)
+            branches = expand_preset(preset)
             branch_layer = layer_name
             break
 
@@ -115,6 +104,14 @@ def validate_language(configuration: LanguageConfiguration) -> list[str]:
     validated once, up front, rather than discovered mid-run.
     """
     errors: list[str] = []
+    if configuration.preset is not None and configuration.preset not in LANGUAGE_PRESETS:
+        errors.append(
+            f"Unknown language preset '{configuration.preset}'. Available presets: {', '.join(LANGUAGE_PRESETS)}"
+        )
+    for field in ("source", "render_language"):
+        tag = getattr(configuration, field)
+        if tag is not None and not _LANGUAGE_TAG_REGEX.fullmatch(tag):
+            errors.append(f"language.{field} has a malformed BCP-47 tag: {tag!r}")
     branches = configuration.branches
     if not branches:
         errors.append("language.branches must name at least one language")
@@ -127,7 +124,7 @@ def validate_language(configuration: LanguageConfiguration) -> list[str]:
     if duplicates:
         errors.append(f"language.branches has duplicate languages: {', '.join(duplicates)}")
 
-    malformed: list[str] = [branch for branch in branches if not _LANGUAGE_TAG_REGEX.match(branch)]
+    malformed: list[str] = [branch for branch in branches if not _LANGUAGE_TAG_REGEX.fullmatch(branch)]
     if malformed:
         errors.append(f"language.branches has malformed BCP-47 tags: {', '.join(malformed)}")
 
@@ -145,4 +142,45 @@ def validate_language(configuration: LanguageConfiguration) -> list[str]:
             f"language.competence_branch '{competence_branch}' is not one of language.branches "
             f"({', '.join(branches) or 'none'})"
         )
+    return errors
+
+
+def resolve_run_language(
+    configuration: CrossfireConfiguration, parameters: RunParameters
+) -> tuple[LanguageConfiguration, dict[str, str]]:
+    """Resolves all language layers and detects the source before validation, pricing or execution."""
+    global_layer = configuration.language_layer
+    if not global_layer:
+        global_layer = asdict(configuration.language)
+        if configuration.language.preset is not None:
+            global_layer.pop("branches")
+    language, provenance = resolve_language(
+        cli=parameters.language_cli,
+        mode_override=configuration.language_modes.get(parameters.mode.value),
+        global_=global_layer,
+    )
+    language = replace(language, source=resolve_source_language(language.source, parameters.task.instruction))
+    return language, provenance
+
+
+def branch_needs_translation(language: LanguageConfiguration, tag: str) -> bool:
+    """Returns whether a branch needs its original instruction translated."""
+    return language.translate_instruction and tag != language.source
+
+
+def validate_run_language(configuration: CrossfireConfiguration, language: LanguageConfiguration) -> list[str]:
+    """Validates the language surface and the model groups required by the resolved operations."""
+    errors = validate_language(language)
+    needs_translator = any(branch_needs_translation(language, tag) for tag in language.branches)
+    if language.render_language:
+        render_source = language.branches[0] if len(language.branches) == 1 else language.source
+        needs_translator |= language.render_language != render_source or any(
+            tag != language.render_language for tag in language.branches
+        )
+        if len(language.branches) > 1 and not language.adjudicate:
+            errors.append("language.render_language requires adjudication for a multi-branch run")
+    if needs_translator and not configuration.translator.names:
+        errors.append("No translator models configured: set [models.translator] names")
+    if len(language.branches) >= 2 and language.adjudicate and not configuration.adjudicator.names:
+        errors.append("No adjudicator models configured: set [models.adjudicator] names, or set adjudicate = false")
     return errors

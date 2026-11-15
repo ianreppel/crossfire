@@ -501,6 +501,9 @@ def build_reviewer_prompt(
     if search_enabled:
         parts.append(_SEARCH_INSTRUCTION)
 
+    if language_tag:
+        parts.append(language_tag)
+
     user = "".join(parts)
     return system, user
 

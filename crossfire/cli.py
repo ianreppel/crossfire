@@ -6,7 +6,6 @@ import asyncio
 import logging as _logging
 import shutil
 import sys
-from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -15,9 +14,8 @@ import click
 
 from crossfire.core.archive import RunArchive
 from crossfire.core.config import load_configuration
-from crossfire.core.detection import LanguageDetectionError, resolve_source_language
 from crossfire.core.domain import CostEstimate, CrossfireConfiguration, Mode, RunParameters, Task
-from crossfire.core.language import resolve_language
+from crossfire.core.language import resolve_run_language, validate_run_language
 from crossfire.core.logging import set_stderr_level
 from crossfire.core.orchestrator import Orchestrator, RunFailedError
 from crossfire.core.pricing import (
@@ -187,11 +185,15 @@ def run(
         assert instruction is not None
         effective_instruction = instruction
 
-    base_configuration: CrossfireConfiguration = load_configuration(
-        configuration_path=Path(configuration_path) if configuration_path else None,
-        cli_overrides={"provider": provider} if provider else None,
-    )
-    configuration: CrossfireConfiguration = base_configuration.resolve_for_mode(mode)
+    try:
+        base_configuration = load_configuration(
+            configuration_path=Path(configuration_path) if configuration_path else None,
+            cli_overrides={"provider": provider} if provider else None,
+        )
+        configuration = base_configuration.resolve_for_mode(mode)
+    except ValueError as exception:
+        click.echo(f"Configuration error: {exception}", err=True)
+        sys.exit(1)
 
     context: str = ""
     if context_file:
@@ -210,13 +212,6 @@ def run(
         language_cli["translate_instruction"] = False
     if no_adjudicate:
         language_cli["adjudicate"] = False
-    configured_source = configuration.language.source
-    if language_cli.get("source", configured_source) == "auto":
-        try:
-            language_cli["source"] = resolve_source_language("auto", effective_instruction)
-        except LanguageDetectionError as exception:
-            click.echo(f"Configuration error: {exception}", err=True)
-            sys.exit(1)
 
     task = Task(instruction=effective_instruction, context=context)
 
@@ -235,6 +230,11 @@ def run(
     )
 
     errors = configuration.validate(parameters.num_generators, parameters.num_reviewers_per_candidate)
+    try:
+        language, _provenance = resolve_run_language(configuration, parameters)
+        errors.extend(validate_run_language(configuration, language))
+    except ValueError as exception:
+        errors.append(str(exception))
     if errors:
         for error in errors:
             click.echo(f"Configuration error: {error}", err=True)
@@ -365,12 +365,7 @@ def _try_estimate_cost(
     except (ValueError, OSError) as exception:
         click.echo(f"Could not load {PRICING_FILENAME}: {exception}", err=True)
         return None
-    language, _provenance = resolve_language(
-        cli=parameters.language_cli,
-        mode_override=configuration.language_modes.get(parameters.mode.value),
-        global_=Orchestrator._global_language_layer(configuration),
-    )
-    return estimate_cost(replace(configuration, language=language), parameters, pricing, fetched_at)
+    return estimate_cost(configuration, parameters, pricing, fetched_at)
 
 
 async def _execute(

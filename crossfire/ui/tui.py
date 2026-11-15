@@ -91,7 +91,8 @@ class TUI:
         self._run_start: float = 0.0
         self._current_round: int = 0
 
-        self._rounds: dict[int, list[_TaskRow]] = {}
+        self._branch = ""
+        self._rounds: dict[tuple[str, int], list[_TaskRow]] = {}
         self._active_phase: Phase | None = None
         self._active_phase_total: int = 0
         self._active_phase_done: int = 0
@@ -127,10 +128,15 @@ class TUI:
 
     # -- ProgressCallback protocol --
 
+    def on_branch_start(self, branch: str) -> None:
+        self._branch = branch
+        self._current_round = 0
+        self._refresh()
+
     def on_round_start(self, round_num: int, total_rounds: int) -> None:
         self._total_rounds = total_rounds
         self._current_round = round_num
-        self._rounds.setdefault(round_num, [])
+        self._rounds.setdefault((self._branch, round_num), [])
         self._refresh()
 
     def on_phase_start(
@@ -149,7 +155,7 @@ class TUI:
         if models:
             indices = candidate_indices or [None] * len(models)
             wire_ids = wire_model_ids or [""] * len(models)
-            rows = self._rounds.setdefault(round_num, [])
+            rows = self._rounds.setdefault((self._branch, round_num), [])
             for model, candidate_index, wire in zip(models, indices, wire_ids, strict=True):
                 rows.append(
                     _TaskRow(
@@ -170,7 +176,7 @@ class TUI:
     ) -> None:
         self._active_phase_done += 1
         now = time.monotonic()
-        for row in reversed(self._rounds.get(round_num, [])):
+        for row in reversed(self._rounds.get((self._branch, round_num), [])):
             if row.done:
                 continue
             if row.phase != phase:
@@ -186,7 +192,7 @@ class TUI:
 
     def on_phase_end(self, round_num: int, phase: Phase) -> None:
         now = time.monotonic()
-        for row in self._rounds.get(round_num, []):
+        for row in self._rounds.get((self._branch, round_num), []):
             if row.phase == phase and not row.done:
                 row.done = True
                 row.elapsed = now - row.start_time
@@ -272,23 +278,25 @@ class TUI:
         history_lines: list[Any] = []
         current_round_lines: list[Any] = []
 
-        for round_number in sorted(self._rounds):
-            rows: list[_TaskRow] = self._rounds[round_number]
-            is_current: bool = round_number == self._current_round
+        for (branch, round_number), rows in self._rounds.items():
+            is_current = (branch, round_number) == (self._branch, self._current_round)
+            branch_label = f"[{branch}] " if branch else ""
             round_finished: bool = bool(rows) and all(row.done for row in rows)
 
             if not is_current and round_finished:
-                history_lines.append(self._build_collapsed_round(round_number, rows))
+                history_lines.append(Text(branch_label) + self._build_collapsed_round(round_number, rows))
                 continue
 
             if round_number == 0:
-                current_round_lines.append(Text("  Enrichment", style="bold blue"))
+                current_round_lines.append(Text(f"  {branch_label}Enrichment", style="bold blue"))
             else:
-                current_round_lines.append(Text(f"  Round {round_number}/{self._total_rounds}", style="bold"))
+                current_round_lines.append(
+                    Text(f"  {branch_label}Round {round_number}/{self._total_rounds}", style="bold")
+                )
 
             current_round_lines.extend(self._build_round_rows(round_number, rows, max_model_display_width, now))
 
-            if self._should_show_phase_bar(round_number, rows):
+            if is_current and self._should_show_phase_bar(round_number, rows):
                 current_round_lines.append(self._build_phase_bar(rows))
 
         overall_bar: Progress = self._build_overall_bar()

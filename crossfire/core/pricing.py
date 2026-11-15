@@ -18,6 +18,7 @@ from crossfire.core.domain import (
     split_provider_pin,
     strip_provider_pin,
 )
+from crossfire.core.language import branch_needs_translation, resolve_run_language
 from crossfire.core.reviewers import assign_reviewers
 from crossfire.core.tokens import estimate_tokens
 
@@ -261,8 +262,8 @@ def estimate_cost(
     num_rounds: int = parameters.num_rounds
 
     enrichment_active: bool = parameters.enrich and bool(configuration.enricher.names)
-    language = configuration.language
-    branches: tuple[str, ...] = language.branches or ("en",)
+    language, _provenance = resolve_run_language(configuration, parameters)
+    branches = language.branches
     translator_available: bool = bool(configuration.translator.names)
 
     # After enrichment the enriched instruction replaces the original in all
@@ -282,7 +283,7 @@ def estimate_cost(
     per_branch: list[tuple[str, float]] = []
     for branch in branches:
         branch_total: float = 0.0
-        translated: bool = language.translate_instruction and branch != language.source and translator_available
+        translated: bool = branch_needs_translation(language, branch) and translator_available
         if translated:
             branch_total += cost_of(configuration.translator.names[0], instruction_tokens, translator_output)
         if enrichment_active:
@@ -315,7 +316,11 @@ def estimate_cost(
         total += cost_of(configuration.adjudicator.names[0], adjudication_input, adjudicator_output)
 
     # The render translates the prose around the verbatim passages, section by section.
-    if len(branches) >= 2 and language.render_language and translator_available:
+    if (
+        language.render_language
+        and translator_available
+        and language.render_language != (branches[0] if len(branches) == 1 else language.source)
+    ):
         render_sections: int = max(1, num_generators * num_rounds)
         render_input = render_sections * synthesizer_output
         render_output = render_sections * translator_output

@@ -4,6 +4,70 @@ Crossfire is a multi-agent adversarial refinement orchestrator, which means: it 
 That _generation → review → synthesis_ loop is repeated as many times as you want.
 Crossfire implements a [multi-start evolutionary search with delayed selection](https://ianreppel.org/ralph-wiggum-as-a-degenerate-evolutionary-search/), or an improved [Ralph Wiggum](https://ghuntley.com/ralph/) method.
 
+## Language branches and rendering
+
+The default is one English branch with the existing single-language output layout.
+Each extra branch runs its own enrichment, generation, review and synthesis loop, so it adds cost.
+The source instruction stays immutable across branches.
+
+```toml
+[language]
+source = "en"
+branches = ["en", "de"]
+render_language = "en"
+translate_instruction = true
+adjudicate = true
+translator_backend = "llm"
+
+[models.translator]
+names = ["openai/gpt-6-luna"]
+context_window = 16000
+max_output_tokens = 4096
+
+[models.adjudicator]
+names = ["moonshotai/kimi-k3"]
+context_window = 200000
+max_output_tokens = 32000
+```
+
+Choose an adjudicator whose resolved gateway model differs from every synthesizer, including fallbacks.
+A `preset = "multilingual"` or `"multilingual-wide"` may replace `branches`, but cannot share its configuration layer.
+Unknown presets and malformed language tags fail before provider calls.
+`[language.modes.research]` and other mode sections override the global language settings.
+Explicit CLI options override both.
+`source = "auto"` uses offline script and stopword detection after resolving those layers.
+Ambiguous detection requires an explicit source language.
+Only the `llm` translator backend is implemented.
+
+| Option | Behaviour |
+| --- | --- |
+| `--language-branch TAG` | Select a branch; repeat for more branches. |
+| `--source-language TAG` | Set the source tag or request offline detection with `auto`. |
+| `--competence-branch TAG` | Mark an existing branch without imposing a competence gate. |
+| `--render-language TAG` | Produce a non-attested reader rendering. |
+| `--no-translate-instruction` | Keep the original instruction and request each branch's response language. |
+| `--no-adjudicate` | Skip cross-branch comparison; multi-branch rendering then requires enabling adjudication. |
+| `--resume` | Reuse archived work only while its inputs, predecessors and saved hashes still match. |
+
+```bash
+crossfire run --mode research --instruction "Explain the historical event with sources." \
+  --language-branch en --language-branch de --render-language en --run-dir runs/comparison
+```
+
+Multi-branch runs write `branches/<tag>/output.md`, `evidence.jsonl`, `adjudication/packet-N.txt` and `cross-branch.md`.
+Renders live in `render/<tag>.md` and become `final.md`, with a fixed marker identifying them as non-attested.
+A sole foreign branch may translate its instruction and synthesise in that language.
+It can render back to the reader's language without adjudication.
+Its original synthesis stays in `output.md` when rendering is requested.
+Failed instruction translations are excluded.
+One surviving branch reports `single-branch`; completeness and the surviving count are recorded separately.
+Citations, explicit bibliographic fields and identifiers remain verbatim through translation.
+Identity replies, refusals, fidelity failures and confident language mismatches cannot be attested.
+Short or mixed text for which offline detection has no verdict still has to pass the other gates.
+Cost estimates resolve the same branch plan as execution.
+Actual operation subtotals are saved in `meta.json` under `cost.per_branch`.
+A render translation that fails retains its source prose and remains non-attested.
+
 ## Architecture
 
 ```mermaid
@@ -145,7 +209,8 @@ Each mode can override the global `[models.*]` defaults via `[modes.<mode>.*]` s
 Only roles that differ need to be specified.
 Any missing roles fall back to the global default.
 
-Cross-group overlap is allowed: a model may both generate and review in the same round, as they do not share prompts or contexts.
+A model may both generate and review in the same round, as those roles do not share prompts or contexts.
+Adjudicators must resolve to different wire identities from all synthesizers and their fallbacks.
 
 Model names in `[models.*]` are neutral slugs.
 `[providers.<name>.model_ids]` maps them to each gateway's wire IDs.
@@ -158,7 +223,9 @@ Synthetic's `syn:*` aliases keep the call stable when its routed model changes.
 
 ## Configuration
 Crossfire is configured via `crossfire.toml` at the project root.
-The file defines four model groups (`enricher`, `generators`, `reviewers`, `synthesizer`), each with a list of model IDs, a context window, and maximum output tokens.
+The core model groups are `enricher`, `generators`, `reviewers` and `synthesizer`.
+Language operations add the optional `translator` and `adjudicator` groups.
+Each group has model IDs, a context window and maximum output tokens.
 Per-mode overrides go in `[modes.<mode>.*]` sections.
 
 See [`crossfire.toml`](crossfire.toml) for the full configuration with all 5 modes, per-model context window overrides, and detailed comments explaining the model selection rationale.

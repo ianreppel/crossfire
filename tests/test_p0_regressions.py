@@ -169,7 +169,7 @@ async def test_render_translator_cannot_reverse_canonical_state(fake_transport: 
     fake_transport.queue("adjudicator", verdict_reply([key]))
     fake_transport.queue(
         "translator",
-        "Explain the finding.",
+        "Erklären Sie die Erkenntnis mit den Quellen.",
         "State: agrees.\nBranches: en, de. Claims compared: 1.",
         "State: agrees.",
     )

@@ -388,7 +388,8 @@ class LanguageConfiguration:
     """Language surface for a run: one branch per language, plus the source and render languages.
 
     The defaults describe today's pipeline: one English branch, no preset, no render language.
-    A single-branch run translates nothing and adjudicates nothing, whatever the flags say.
+    A foreign branch translates its instruction and may render its synthesis back to the reader's language.
+    A single branch never adjudicates.
     """
 
     source: str = "en"
@@ -552,6 +553,15 @@ class CrossfireConfiguration:
         if not self.synthesizer.names:
             errors.append("No synthesizer models configured")
 
+        synthesizer_ids = {active_provider.resolve_wire_model_id(model) for model in self.synthesizer.names}
+        adjudicator_ids = {active_provider.resolve_wire_model_id(model) for model in self.adjudicator.names}
+        overlap = synthesizer_ids & adjudicator_ids
+        if overlap:
+            errors.append(
+                "adjudicator and synthesizer must have independent wire identities, including fallbacks: "
+                + ", ".join(sorted(overlap))
+            )
+
         required_reviewers = num_generators * num_reviewers_per_candidate
         if num_reviewers_per_candidate > 0 and len(self.reviewers.names) < required_reviewers:
             errors.append(
@@ -684,6 +694,7 @@ class CostTracker:
                 "cost": 0.0,
             }
         )
+        per_branch: dict[str, dict[str, float]] = {}
         total_input = 0
         total_output = 0
         total_cache_read = 0
@@ -692,6 +703,13 @@ class CostTracker:
         unpriced_models: set[str] = set()
 
         for entry in self.entries:
+            branch_totals = per_branch.setdefault(
+                entry.branch,
+                {"input_tokens": 0, "output_tokens": 0, "cache_read_tokens": 0, "cache_write_tokens": 0, "cost": 0.0},
+            )
+            for token_field in ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens"):
+                branch_totals[token_field] += getattr(entry, token_field)
+            branch_totals["cost"] += entry.cost or 0.0
             total_input += entry.input_tokens
             total_output += entry.output_tokens
             total_cache_read += entry.cache_read_tokens
@@ -710,6 +728,7 @@ class CostTracker:
 
         return {
             "per_model": dict(per_model),
+            "per_branch": per_branch,
             "total_input_tokens": total_input,
             "total_output_tokens": total_output,
             "total_cache_read_tokens": total_cache_read,

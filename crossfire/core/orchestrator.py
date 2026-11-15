@@ -24,6 +24,7 @@ from crossfire.core.adjudication import (
 from crossfire.core.archive import RunArchive
 from crossfire.core.compression import compress_prompt_components
 from crossfire.core.config import get_api_key
+from crossfire.core.detection import detect_language
 from crossfire.core.domain import (
     Branch,
     BranchContext,
@@ -33,7 +34,6 @@ from crossfire.core.domain import (
     CostTracker,
     CrossBranchVerdict,
     CrossfireConfiguration,
-    LanguageConfiguration,
     ModelGroup,
     Phase,
     Review,
@@ -47,7 +47,7 @@ from crossfire.core.domain import (
 from crossfire.core.evidence import EvidenceRegistry, apply_evidence_rules
 from crossfire.core.exclamations import exclaim
 from crossfire.core.hashing import sha256_text
-from crossfire.core.language import resolve_language, validate_language
+from crossfire.core.language import branch_needs_translation, resolve_run_language, validate_run_language
 from crossfire.core.pricing import PRICING_FILENAME, load_pricing
 from crossfire.core.progress import NoOpProgress, ProgressCallback
 from crossfire.core.prompts import (
@@ -168,7 +168,7 @@ class Orchestrator:
         self._searches_performed: list[dict[str, str | int]] = []
         self._session_id = f"crossfire-{uuid4()}"
         self._pricing: dict[str, tuple[float, float]] | None = None
-        self.language, self.language_provenance = self._resolve_language(configuration)
+        self.language, self.language_provenance = resolve_run_language(configuration, parameters)
         # The branch currently running: its own task, search cache and failure counter, never another branch's.
         self._active_context: BranchContext = BranchContext(
             branch=Branch(language=self.language.source),
@@ -183,37 +183,6 @@ class Orchestrator:
         self._configuration_sha256 = ""
 
     # -- language surface ---
-
-    @staticmethod
-    def _global_language_layer(configuration: CrossfireConfiguration) -> dict[str, Any]:
-        """Returns the explicit global language layer, falling back to the resolved global view.
-
-        A configuration built in code rather than parsed from TOML carries its global values on ``language`` alone, and
-        that view is exactly what the global layer means for an empty ``[language]`` section.
-        """
-        if configuration.language_layer:
-            return configuration.language_layer
-        resolved = configuration.language
-        layer: dict[str, Any] = {
-            "source": resolved.source,
-            "branches": list(resolved.branches),
-            "translate_instruction": resolved.translate_instruction,
-            "adjudicate": resolved.adjudicate,
-            "translator_backend": resolved.translator_backend,
-        }
-        for key in ("preset", "competence_branch", "render_language"):
-            value = getattr(resolved, key)
-            if value is not None:
-                layer[key] = value
-        return layer
-
-    def _resolve_language(self, configuration: CrossfireConfiguration) -> tuple[LanguageConfiguration, dict[str, str]]:
-        """Resolves this run's language configuration from the CLI, mode and global layers."""
-        return resolve_language(
-            cli=self.parameters.language_cli,
-            mode_override=configuration.language_modes.get(self.parameters.mode.value),
-            global_=self._global_language_layer(configuration),
-        )
 
     def _build_branches(self, configuration: CrossfireConfiguration) -> list[Branch]:
         """Builds one pending branch per configured language.
@@ -253,7 +222,7 @@ class Orchestrator:
         original = self._original_task.instruction
         if branch.instruction_text:
             return branch
-        needs_translation = self.language.translate_instruction and branch.language != self.language.source
+        needs_translation = branch_needs_translation(self.language, branch.language)
         if not needs_translation:
             return replace(branch, instruction_text=original, instruction_hash=sha256_text(original))
 
@@ -266,6 +235,7 @@ class Orchestrator:
                 system_prompt=system,
                 user_prompt=user,
                 role=Role.TRANSLATOR,
+                branch=branch.language,
                 round_num=0,
                 max_retries=0,
             )
@@ -287,6 +257,16 @@ class Orchestrator:
 
         # Citations, numbers and identifiers must come back byte-identical, or the branch is not usable.
         violations = fidelity_violations(masked, translated, spans)
+        if _REFUSAL_REGEX.search(translated):
+            violations.append("the translator refused the instruction")
+        if restore_do_not_translate(translated, spans) == original.strip():
+            violations.append("the translator returned the source instruction unchanged")
+        detectable = translated
+        for span in spans:
+            detectable = detectable.replace(span.placeholder, "")
+        detected = detect_language(detectable).language
+        if detected and detected.lower() != branch.language.split("-", 1)[0].lower():
+            violations.append(f"the translator returned {detected}, expected {branch.language}")
         if violations:
             log.log_translation_failed(
                 branch=branch.language,
@@ -327,7 +307,7 @@ class Orchestrator:
             self.parameters.num_generators,
             self.parameters.num_reviewers_per_candidate,
         )
-        errors.extend(validate_language(self.language))
+        errors.extend(validate_run_language(self.configuration, self.language))
         if errors:
             raise ValueError("; ".join(errors))
 
@@ -359,10 +339,6 @@ class Orchestrator:
                 )
 
             branches = self._build_branches(self.configuration)
-            if len(branches) >= 2 and self.language.adjudicate and not self.configuration.adjudicator.names:
-                raise ValueError(
-                    "No adjudicator models configured: set [models.adjudicator] names, or set adjudicate = false"
-                )
             contexts: list[BranchContext] = []
             for branch in branches:
                 translated = self._resumed_instruction(branch) or await self._translate_instruction(branch)
@@ -380,8 +356,9 @@ class Orchestrator:
                     )
                 )
 
-            shape = self._run_shape(synthesised, branches)
-            status = "PARTIAL" if shape == "partial" else "COMPLETE"
+            shape = self._run_shape(synthesised, [context.branch for context in contexts])
+            incomplete = any(context.partial for context in synthesised) or len(synthesised) < len(branches)
+            status = "PARTIAL" if incomplete else "COMPLETE"
             primary = self._primary_context(synthesised)
             result: str = primary.synthesis_history[-1]
             adjudication: AdjudicationResult | None = None
@@ -398,6 +375,11 @@ class Orchestrator:
                     if self._archive:
                         self._archive.save_render(self.language.render_language, result)
 
+            if len(synthesised) == 1 and self.language.render_language:
+                result = await self._render_single_branch(primary, status=status)
+                if self._archive:
+                    self._archive.save_render(self.language.render_language, result)
+
             log.log_run_shape(shape=shape, branches=len(branches), synthesised=len(synthesised), status=status)
             if self._archive:
                 self._archive.journal.append(
@@ -405,13 +387,14 @@ class Orchestrator:
                     shape=shape,
                     status=status,
                     synthesised=[context.branch.language for context in synthesised],
+                    surviving_branches=len(synthesised),
                 )
 
             cost = self.cost_tracker.summarize()
             log.log_cost_summary(cost)
 
             if self._archive:
-                if len(branches) > 1:
+                if len(branches) > 1 or self.language.render_language:
                     self._archive.save_final_synthesis(result)
                 self._archive.save_metadata(
                     original_instruction,
@@ -430,6 +413,7 @@ class Orchestrator:
                     self._archive.save_searches(self._searches_performed)
             return result
         finally:
+            self._progress.on_run_end()
             if self._archive is not None:
                 self._archive.release_owner()
             if self._http_client is not None:
@@ -497,6 +481,7 @@ class Orchestrator:
                             system_prompt=system,
                             user_prompt=user,
                             role=Role.ADJUDICATOR,
+                            branch="adjudication",
                             round_num=0,
                             max_retries=0,
                         )
@@ -613,33 +598,47 @@ class Orchestrator:
         lines: list[str] = [marker, "", await self._translate_render_prose(header, render_language)]
         if adjudication.warning:
             lines.extend(["", adjudication.warning])
-        for verdict in verdicts:
-            lines.extend(["", f"## {verdict.claim}", "", f"State: {verdict.state.value}."])
-            for branch, passage in verdict.by_branch.items():
-                lines.append(f"- {branch}: {passage or '(omitted)'}")
-            if verdict.evidence_ids:
-                lines.append(f"Evidence: {', '.join(verdict.evidence_ids)}.")
+        # The adjudication renderer owns the canonical claim layout, including its untranslated states.
+        _header, separator, body = adjudication.published.partition("\n## ")
+        if separator:
+            lines.extend(["", "## " + body.rstrip()])
         rendered = "\n".join(lines).rstrip() + "\n"
         if self._archive:
             self._archive.journal.append("rendered", language=render_language, claims=len(verdicts))
         return rendered
 
-    async def _translate_render_prose(self, text: str, target_language: str) -> str:
+    async def _render_single_branch(self, context: BranchContext, *, status: str) -> str:
+        """Renders a sole surviving synthesis without inventing a cross-branch comparison."""
+        target = self.language.render_language or self.language.source
+        source = context.branch.language
+        translated = await self._translate_render_prose(context.synthesis_history[-1], target, source_language=source)
+        marker = "CROSSFIRE-RENDER " + json.dumps(
+            {"language": target, "attested": False, "branches": [source], "claims": 0, "status": status}
+        )
+        if self._archive:
+            self._archive.journal.append("rendered", language=target, claims=0)
+        return f"{marker}\n\n{translated.rstrip()}\n"
+
+    async def _translate_render_prose(
+        self, text: str, target_language: str, *, source_language: str | None = None
+    ) -> str:
         """Translates one render section into *target_language*, keeping its protected spans byte-identical.
 
         A failed or unfaithful translation returns the source prose unchanged: a render is not attested, so a missing
         rendering is reported rather than shouted, but nothing invented is ever substituted for it.
         """
-        if target_language == self.language.source:
+        source_language = source_language or self.language.source
+        if target_language == source_language:
             return text
         masked, spans = extract_do_not_translate(text)
-        system, user = build_translation_prompt(f"{self.language.source}->{target_language}", masked)
+        system, user = build_translation_prompt(f"{source_language}->{target_language}", masked)
         try:
             reply = await self._call_llm(
                 model=self.configuration.translator.names[0],
                 system_prompt=system,
                 user_prompt=user,
                 role=Role.TRANSLATOR,
+                branch=f"render:{target_language}",
                 round_num=0,
                 max_retries=0,
             )
@@ -818,13 +817,13 @@ class Orchestrator:
     def _run_shape(synthesised: list[BranchContext], branches: list[Branch]) -> str:
         """Returns the run's shape: ``full``, ``partial`` or ``single-branch``.
 
-        A failed branch or unfinished round loop makes the run partial, including a single branch with usable output.
-        A complete run with one configured branch is single-branch.
+        Translation exclusions reduce the branch set before the shape is computed. Completeness is reported separately,
+        including excluded or failed branches.
         """
-        if any(context.partial for context in synthesised) or len(synthesised) < len(branches):
-            return "partial"
         if len(synthesised) < 2:
             return "single-branch"
+        if any(context.partial for context in synthesised) or len(synthesised) < len(branches):
+            return "partial"
         return "full"
 
     def _primary_context(self, contexts: list[BranchContext]) -> BranchContext:
@@ -880,6 +879,7 @@ class Orchestrator:
         ``branch_failed`` and left out of the reconciliation rather than aborting the other branches.
         Consecutive failures preserve usable output as partial and abort only a single branch with no usable output.
         """
+        self._progress.on_branch_start(context.branch.language)
         self._active_context = context
         self._active_task = context.task
         self._active_archive = self._archive_for(context.branch)
@@ -949,14 +949,12 @@ class Orchestrator:
                         remaining_rounds=remaining,
                         reason="no_weaknesses",
                     )
-                    self._progress.on_run_end()
                     break
             else:
                 # Consecutive failures end this branch while preserving its last usable synthesis.
                 context.consecutive_round_failures += 1
                 if context.consecutive_round_failures >= MAX_CONSECUTIVE_ROUND_FAILURES:
                     if previous_synthesis.strip() or len(self.language.branches) > 1:
-                        self._progress.on_run_end()
                         break
                     start_round = round_num - context.consecutive_round_failures + 1
                     raise RunFailedError(
@@ -966,9 +964,6 @@ class Orchestrator:
                             "The models are having a bad day."
                         )
                     )
-        else:
-            # When the loop completes without an early stop
-            self._progress.on_run_end()
 
         if not previous_synthesis.strip():
             context.branch = replace(context.branch, state=BranchState.BRANCH_FAILED)
@@ -990,7 +985,7 @@ class Orchestrator:
                 status="PARTIAL" if context.partial else "COMPLETE",
                 sha256=sha256_text(previous_synthesis),
             )
-            if len(self.language.branches) > 1:
+            if len(self.language.branches) > 1 or self.language.render_language:
                 self._active_archive.save_branch_output(previous_synthesis)
             else:
                 self._active_archive.save_final_synthesis(previous_synthesis)
@@ -1851,6 +1846,7 @@ class Orchestrator:
         round_num: int,
         dry_run_candidate_index: int | None = None,
         max_retries: int | None = None,
+        branch: str | None = None,
     ) -> str:
         """Dispatches to a simulated response (dry run) or the active provider's API.
 
@@ -1923,7 +1919,7 @@ class Orchestrator:
                 cost=cost,
                 provider=provider.name,
                 wire_model_id=wire_model_id,
-                branch=self._active_task.language,
+                branch=branch if branch is not None else self._active_context.branch.language,
             )
         )
 

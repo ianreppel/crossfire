@@ -137,6 +137,7 @@ class RunArchive:
 
     def __init__(self, base: Path, journal: RunJournal | None = None, prefix: str = "") -> None:
         self.base = base
+        self._root = (journal.path.parent if journal else base).resolve()
         self.journal = journal or RunJournal(base / "journal.jsonl")
         self.prefix = prefix
         self._owner: RunOwner | None = None
@@ -148,7 +149,10 @@ class RunArchive:
         ``--resume`` reads a single record of everything that happened.
         """
         segments = [segment for segment in (self.prefix, *parts) if segment]
-        return RunArchive(self.base.joinpath(*parts), journal=self.journal, prefix="/".join(segments))
+        target = self.base.joinpath(*parts)
+        if not target.resolve().is_relative_to(self._root):
+            raise ArchiveWriteError(f"Archive child would escape outside its root: {target}")
+        return RunArchive(target, journal=self.journal, prefix="/".join(segments))
 
     def record_path(self, rel_path: str) -> str:
         """Returns *rel_path* relative to the run root, which is what the journal records."""
@@ -239,6 +243,8 @@ class RunArchive:
         """
         target = self.base / rel_path
         temporary = target.with_name(target.name + ".tmp")
+        if any(not path.resolve().is_relative_to(self._root) for path in (target, temporary)):
+            raise ArchiveWriteError(f"Archive write would escape outside its root: {rel_path}")
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
             temporary.write_text(content, encoding="utf-8")

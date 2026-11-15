@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -23,7 +24,7 @@ INTENDED_DIFFERENCES = {
 @pytest.fixture(scope="module")
 def golden() -> dict:
     """The observation recorded from the pinned baseline tree."""
-    return json.loads(GOLDEN.read_text(encoding="utf-8"))
+    return cast(dict, json.loads(GOLDEN.read_text(encoding="utf-8")))
 
 
 @pytest.fixture(scope="module")

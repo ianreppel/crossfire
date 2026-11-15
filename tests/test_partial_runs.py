@@ -19,12 +19,12 @@ ANSWER = "The supported finding remains usable."
 
 
 @pytest.mark.parametrize(
-    ("branches", "replies", "expected_calls"),
+    ("branches", "replies", "expected_calls", "expected_shape"),
     [
-        (("en",), [DRAFT, REFUSAL, REFUSAL], 3),
-        (("en", "de"), [DRAFT, REFUSAL, REFUSAL] * 2, 6),
-        (("en", "de"), [DRAFT] * 4 + [REFUSAL] * 2, 6),
-        (("en", "de"), [REFUSAL] * 2 + [DRAFT] * 4, 6),
+        (("en",), [DRAFT, REFUSAL, REFUSAL], 3, "single-branch"),
+        (("en", "de"), [DRAFT, REFUSAL, REFUSAL] * 2, 6, "partial"),
+        (("en", "de"), [DRAFT] * 4 + [REFUSAL] * 2, 6, "single-branch"),
+        (("en", "de"), [REFUSAL] * 2 + [DRAFT] * 4, 6, "single-branch"),
     ],
     ids=["single", "both_partial", "later_failed", "earlier_failed"],
 )
@@ -32,6 +32,7 @@ async def test_consecutive_failures_preserve_output_as_partial(
     branches: tuple[str, ...],
     replies: list[str],
     expected_calls: int,
+    expected_shape: str,
     fake_transport: FakeTransport,
     tmp_path: Path,
     clean_logger: logging.Logger,
@@ -56,7 +57,7 @@ async def test_consecutive_failures_preserve_output_as_partial(
     assert metadata["status"] == "PARTIAL"
     for records in (capture.records, RunArchive(tmp_path).journal.replay()):
         shape = [record for record in records if record["event"] == "run_shape"][-1]
-        assert shape["shape"] == "partial"
+        assert shape["shape"] == expected_shape
         assert shape["status"] == "PARTIAL"
 
 

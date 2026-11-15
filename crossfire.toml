@@ -265,12 +265,13 @@ max_output_tokens = 32000
 #   max_output_tokens = 4096
 #
 #   [models.adjudicator]
-#   names = ["anthropic/claude-opus-5.5"]
+#   names = ["moonshotai/kimi-k3"]
 #   context_window = 200000
 #   max_output_tokens = 32000
 #
-#   A single branch never translates and never adjudicates, so leaving this
-#   section out changes nothing about today's runs.
+#   A foreign branch translates the instruction and may render its synthesis
+#   back to the reader's language. A single branch never adjudicates.
+#   Leaving this section out keeps the default single English branch.
 
 [search]
 enabled = true

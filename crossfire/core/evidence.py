@@ -11,15 +11,12 @@ import re
 from collections.abc import Mapping
 from dataclasses import replace
 
+from crossfire.core.citations import identifiers, is_citation_line
 from crossfire.core.domain import CrossBranchVerdict, EvidenceSpan, VerdictState
 from crossfire.core.hashing import sha256_text
 
 # Where a span came from: the instruction, the user context, or a citation a branch produced.
 EVIDENCE_ORIGINS: tuple[str, ...] = ("source", "context", "branch_citation")
-
-# A citation line a branch produced: a bracketed number, then an author or title and at least one more word.
-_CITATION_LINE_REGEX = re.compile(r"^\s*\[\d+\]\s+\S.*\S")
-_IDENTIFIER_REGEX = re.compile(r"https?://\S+|\b10\.\d{4,9}/[^\s\"<>,;]+")
 
 
 class EvidenceRegistry:
@@ -48,16 +45,16 @@ class EvidenceRegistry:
         return span
 
     def harvest(self, branch: str, text: str) -> list[EvidenceSpan]:
-        """Stores every citation line a branch produced, verbatim and in the branch's own script.
-
-        Numerals and quoted passages stay inside the citation line that carries them, so a passage is never stored
-        apart from the reference that identifies it.
-        """
+        """Stores citations, quotations and numeral-bearing passages verbatim in the branch's own script."""
         spans: list[EvidenceSpan] = []
         for line in text.split("\n"):
             stripped = line.strip()
-            if _CITATION_LINE_REGEX.match(stripped) or _IDENTIFIER_REGEX.search(stripped):
+            if is_citation_line(stripped) or identifiers(stripped) or stripped.startswith(">"):
                 spans.append(self.add(stripped, origin="branch_citation", branch=branch))
+                continue
+            for sentence in re.split(r"(?<=[.!?])\s+|(?<=[。\uff01\uff1f])", stripped):
+                if re.search(r"\d", sentence):
+                    spans.append(self.add(sentence, origin="branch_citation", branch=branch))
         return spans
 
     def resolve(self, span_id: str) -> EvidenceSpan | None:

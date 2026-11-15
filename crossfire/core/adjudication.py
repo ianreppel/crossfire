@@ -11,15 +11,10 @@ import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 
+from crossfire.core.citations import identifiers
 from crossfire.core.domain import CrossBranchVerdict, EvidenceSpan
 from crossfire.core.prompts import build_cross_branch_adjudicator_prompt
 from crossfire.core.tokens import compute_token_budget, estimate_tokens
-
-_IDENTIFIER_REGEXES: tuple[re.Pattern[str], ...] = (
-    re.compile(r"https?://\S+"),
-    re.compile(r"\b10\.\d{4,9}/[^\s\"<>,;]+"),
-    re.compile(r"\bISBN(?:-1[03])?:?\s*[\dXx-]+"),
-)
 
 # Native-script sentence boundaries do not require whitespace.
 _SENTENCE_BOUNDARY = re.compile(r"(?<=[。\uff01\uff1f])")
@@ -60,11 +55,8 @@ def _is_claim(line: str) -> bool:
 
 def _claim_key(line: str) -> str:
     """Returns the identity of *line*: an identifier when it carries one, else the verbatim string."""
-    for pattern in _IDENTIFIER_REGEXES:
-        match = pattern.search(line)
-        if match:
-            return f"id:{match.group(0)}"
-    return f"text:{line}"
+    extracted = identifiers(line)
+    return f"id:{extracted[0]}" if extracted else f"text:{line}"
 
 
 def extract_claims(syntheses: Mapping[str, str]) -> list[Claim]:

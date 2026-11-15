@@ -13,8 +13,10 @@ class TestEvidenceRegistry:
         branch_text = "The toll was 200,000 or more [1]."
         registry.add("[1] IMTFE judgement, 1948.", origin="branch_citation", branch="en")
 
-        assert registry.resolve(span.id) == span
-        assert registry.resolve(span.id).sha256 == span.sha256
+        resolved = registry.resolve(span.id)
+        assert resolved == span
+        assert resolved is not None
+        assert resolved.sha256 == span.sha256
 
         verdict = CrossBranchVerdict(
             claim="the death toll",

@@ -27,6 +27,7 @@ class ProgressCallback(Protocol):
         candidate_index: int | None = None,
     ) -> None: ...
     def on_phase_end(self, round_num: int, phase: Phase) -> None: ...
+    def on_branch_start(self, branch: str) -> None: ...
     def on_round_start(self, round_num: int, total_rounds: int) -> None: ...
     def on_run_end(self) -> None: ...
 
@@ -55,6 +56,9 @@ class NoOpProgress:
         pass
 
     def on_phase_end(self, round_num: int, phase: Phase) -> None:
+        pass
+
+    def on_branch_start(self, branch: str) -> None:
         pass
 
     def on_round_start(self, round_num: int, total_rounds: int) -> None:

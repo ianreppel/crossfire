@@ -9,6 +9,7 @@ so a run that reaches a model it should not have reached is loud rather than sil
 from __future__ import annotations
 
 import json
+import re
 from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Any
@@ -44,7 +45,7 @@ class FakeTransport:
     _queues: dict[str, list[str]] = field(default_factory=lambda: defaultdict(list))
     _defaults: dict[str, str] = field(default_factory=dict)
     _allowed_roles: set[str] | None = None
-    identity_translator: bool = True
+    identity_translator: bool = False
 
     def queue(self, role: str, *texts: str) -> None:
         """Queues replies for *role*, consumed in order before any default reply."""
@@ -94,8 +95,8 @@ class FakeTransport:
         queue = self._queues.get(role)
         if queue:
             return queue.pop(0)
-        if role == "translator" and self.identity_translator:
-            return _identity_translation(user_prompt)
+        if role == "translator":
+            return _identity_translation(user_prompt) if self.identity_translator else _fixture_translation(user_prompt)
         if role in self._defaults:
             return self._defaults[role]
         raise UnexpectedRequestError(
@@ -125,11 +126,26 @@ class FakeTransport:
 def _identity_translation(user_prompt: str) -> str:
     """Returns the text after the ``[TRANSLATE ...]`` header unchanged.
 
-    A no-op translation keeps the fidelity gate satisfied by construction; a test that cares about the translated words
-    queues its own reply.
+    Identity replies deliberately fail instruction attestation when the language tags differ.
     """
     _, _, remainder = user_prompt.partition("\n")
     return remainder or user_prompt
+
+
+def _fixture_translation(user_prompt: str) -> str:
+    """Returns canned target-language prose with the source's protected tokens and numerals."""
+    header, _, source = user_prompt.partition("\n")
+    target = header.split("->", 1)[1].rstrip("]").split("-", 1)[0]
+    prose = {
+        "en": "Explain the historical event with sources.",
+        "de": "Erklären Sie die Geschichte mit den Quellen und der Forschung.",
+        "fr": "La recherche est dans les sources et les documents de la période.",
+        "ja": "歴史的な事件について資料を用いて説明してください。",
+        "zh": "请根据原始资料解释这一历史事件。",
+        "pt": "A pesquisa não é a mesma que os relatos das fontes.",
+    }.get(target, f"Simulated translation into {target}.")
+    protected = re.findall(r"⟦DT\d+⟧|\d+(?:[.,:/]\d+)*", source)
+    return prose + ("\n" + " ".join(protected) if protected else "")
 
 
 def _split_prompts(payload: dict[str, Any]) -> tuple[str, str]:

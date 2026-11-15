@@ -192,6 +192,7 @@ def log_run_shape(*, shape: str, branches: int, synthesised: int, status: str | 
         shape=shape,
         branches=branches,
         synthesised=synthesised,
+        surviving_branches=synthesised,
         status=status or ("PARTIAL" if shape == "partial" else "COMPLETE"),
     )
 

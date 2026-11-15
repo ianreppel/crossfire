@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import TypedDict, cast
 
 import pytest
 
@@ -25,10 +26,18 @@ from tests.helpers import orchestrator_for
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "cases" / "censorship-subset.jsonl"
 
 
-def fixture_cell(cell: str) -> dict[str, object]:
+class FixtureCell(TypedDict):
+    """Carries the fixture fields consumed by the branch pipeline test."""
+
+    cell: str
+    lang: str
+    messages: list[dict[str, str]]
+
+
+def fixture_cell(cell: str) -> FixtureCell:
     """Returns the fixture row for *cell*, which carries its own authored facts and bases."""
     for line in FIXTURE_PATH.read_text(encoding="utf-8").splitlines():
-        row = json.loads(line)
+        row = cast(FixtureCell, json.loads(line))
         if row["cell"] == cell:
             return row
     raise AssertionError(f"No fixture row for cell {cell}")

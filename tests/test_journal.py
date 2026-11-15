@@ -72,13 +72,16 @@ class TestResume:
         torn = tmp_path / "branches" / "en" / "round-2" / "synthesis.md"
         torn.write_text("half a synthesis", encoding="utf-8")
 
+        fake_transport.queue("synthesizer", "Replacement second round.", "Replacement dependent third round.")
         resumed = orchestrator_for(instruction, tmp_path, num_rounds=3, branches=("en", "de"), resume=True)
         await resumed.run()
 
         assert fake_transport.count("generator") - settled == 2, (
             "the torn round and its dependent round are re-run, for one branch"
         )
-        assert torn.read_text(encoding="utf-8") != "half a synthesis"
+        assert torn.read_text(encoding="utf-8") == "Replacement second round."
+        dependent = tmp_path / "branches" / "en" / "round-3" / "synthesis.md"
+        assert dependent.read_text(encoding="utf-8") == "Replacement dependent third round."
 
 
 class TestOwner:

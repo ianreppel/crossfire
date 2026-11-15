@@ -14,6 +14,7 @@ import sys
 from dataclasses import fields
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 INSTRUCTION = "Explain the Nanjing death toll with sources."
 GENERATOR = "## Draft\n\nA drafted answer that cites [1] one source.\n"
@@ -79,7 +80,6 @@ async def _run(tree: Path, out_dir: Path) -> dict[str, Any]:
         kwargs.setdefault("transport", httpx.MockTransport(transport.handler))
         return real_client(*args, **kwargs)
 
-    httpx.AsyncClient = factory  # type: ignore[assignment]
     for variable in ("OPENCODE_API_KEY", "OPENROUTER_API_KEY", "SYNTHETIC_API_KEY"):
         os.environ[variable] = "sk-differential-fixture"
 
@@ -96,8 +96,8 @@ async def _run(tree: Path, out_dir: Path) -> dict[str, Any]:
     )
     out_dir.mkdir(parents=True, exist_ok=True)
     orchestrator = Orchestrator(configuration, parameters, archive=RunArchive(out_dir))
-    answer = await orchestrator.run()
-    httpx.AsyncClient = real_client  # type: ignore[assignment]
+    with patch.object(httpx, "AsyncClient", factory):
+        answer = await orchestrator.run()
 
     files = {
         str(path.relative_to(out_dir)): digest(path.read_text(encoding="utf-8", errors="replace"))
