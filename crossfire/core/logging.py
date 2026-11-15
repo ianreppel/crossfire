@@ -186,13 +186,13 @@ def log_prompt_enriched(*, model: str, original_tokens: int, enriched_tokens: in
     )
 
 
-def log_run_shape(*, shape: str, branches: int, synthesised: int) -> None:
+def log_run_shape(*, shape: str, branches: int, synthesised: int, status: str | None = None) -> None:
     _emit(
         "run_shape",
         shape=shape,
         branches=branches,
         synthesised=synthesised,
-        status="PARTIAL" if shape == "partial" else "COMPLETE",
+        status=status or ("PARTIAL" if shape == "partial" else "COMPLETE"),
     )
 
 

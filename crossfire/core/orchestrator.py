@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-from dataclasses import replace
+from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any, cast
 from uuid import uuid4
@@ -13,7 +13,14 @@ from uuid import uuid4
 import httpx
 
 from crossfire.core import logging as log
-from crossfire.core.adjudication import Claim, extract_claims, partition_claims, render_cross_branch
+from crossfire.core.adjudication import (
+    AdjudicationResult,
+    Claim,
+    PacketSizeError,
+    extract_claims,
+    partition_claims,
+    render_cross_branch,
+)
 from crossfire.core.archive import RunArchive
 from crossfire.core.compression import compress_prompt_components
 from crossfire.core.config import get_api_key
@@ -149,6 +156,7 @@ class Orchestrator:
     ) -> None:
         self.configuration = configuration
         self.parameters = parameters
+        self._original_task: Task = parameters.task
         self.cost_tracker = CostTracker()
         # Shared across all phases to cap concurrent provider HTTP requests,
         # preventing rate-limit (429) errors and connection exhaustion.
@@ -171,6 +179,8 @@ class Orchestrator:
         # On --resume the journal decides which units are already done: a unit counts only while its artefact hash
         # still matches the file on disk.
         self._journal_records: list[dict[str, Any]] = []
+        self._task_sha256 = ""
+        self._configuration_sha256 = ""
 
     # -- language surface ---
 
@@ -211,7 +221,7 @@ class Orchestrator:
         The branch whose language is the source carries the original instruction, attested with its own hash and an
         empty model id. Every other branch starts empty and is translated by :meth:`_translate_instruction`.
         """
-        original = self._active_task.instruction
+        original = self._original_task.instruction
         branches: list[Branch] = []
         for tag in self.language.branches:
             branch = Branch(language=tag, is_competence_branch=tag == self.language.competence_branch)
@@ -227,8 +237,8 @@ class Orchestrator:
         search cache and the failure counter start empty: a branch never inherits another branch's state.
         """
         task = Task(
-            instruction=branch.instruction_text or self._active_task.instruction,
-            context=self._active_task.context,
+            instruction=branch.instruction_text or self._original_task.instruction,
+            context=self._original_task.context,
             language=branch.language,
         )
         return BranchContext(branch=branch, task=task)
@@ -240,7 +250,7 @@ class Orchestrator:
         branch therefore spends no translation call and is attested as its own original. A translated branch is attested
         with the translator's model id, the hash of what came back, and its own artefact under ``branches/<lang>``.
         """
-        original = self._active_task.instruction
+        original = self._original_task.instruction
         if branch.instruction_text:
             return branch
         needs_translation = self.language.translate_instruction and branch.language != self.language.source
@@ -289,6 +299,8 @@ class Orchestrator:
             digest = self._archive.save_branch_instruction(branch.language, translated)
             self._archive.journal.append(
                 "instruction_attested",
+                task_sha256=self._task_sha256,
+                configuration_sha256=self._configuration_sha256,
                 branch=branch.language,
                 model=model,
                 path=self._archive.record_path(f"branches/{branch.language}/instruction.md"),
@@ -329,12 +341,14 @@ class Orchestrator:
             self._api_key = get_api_key(self.configuration)
             self._http_client = httpx.AsyncClient(timeout=self.configuration.limits.http_timeout)
 
-        original_instruction: str = self._active_task.instruction
+        original_instruction: str = self._original_task.instruction
+        self._bind_run_inputs()
         try:
             if self._archive:
                 self._archive.claim_owner(adopt_stale=self.parameters.resume)
                 if self.parameters.resume:
                     self._journal_records = self._archive.journal.replay()
+                self._validate_resume_inputs()
                 self._archive.save_original_instruction(original_instruction)
                 self._archive.journal.append(
                     "run_started",
@@ -367,26 +381,31 @@ class Orchestrator:
                 )
 
             shape = self._run_shape(synthesised, branches)
-            log.log_run_shape(shape=shape, branches=len(branches), synthesised=len(synthesised))
+            status = "PARTIAL" if shape == "partial" else "COMPLETE"
+            primary = self._primary_context(synthesised)
+            result: str = primary.synthesis_history[-1]
+            adjudication: AdjudicationResult | None = None
+
+            if len(synthesised) >= 2 and self.language.adjudicate:
+                adjudication = await self._adjudicate_branches(synthesised)
+                if adjudication.incomplete_packets:
+                    status = "ADJUDICATION_INCOMPLETE"
+                    result = result.rstrip() + "\n\n" + adjudication.warning + "\n"
+                if self._archive and (adjudication.verdicts or adjudication.incomplete_packets):
+                    self._archive.save_cross_branch(adjudication.published)
+                if (adjudication.verdicts or adjudication.incomplete_packets) and self.language.render_language:
+                    result = await self._render_output(adjudication, synthesised, status=status)
+                    if self._archive:
+                        self._archive.save_render(self.language.render_language, result)
+
+            log.log_run_shape(shape=shape, branches=len(branches), synthesised=len(synthesised), status=status)
             if self._archive:
                 self._archive.journal.append(
                     "run_shape",
                     shape=shape,
-                    status="PARTIAL" if shape == "partial" else "COMPLETE",
+                    status=status,
                     synthesised=[context.branch.language for context in synthesised],
                 )
-
-            primary = self._primary_context(synthesised)
-            result: str = primary.synthesis_history[-1]
-
-            if len(synthesised) >= 2 and self.language.adjudicate:
-                verdicts, published = await self._adjudicate_branches(synthesised)
-                if self._archive and verdicts:
-                    self._archive.save_cross_branch(published)
-                if verdicts and self.language.render_language:
-                    result = await self._render_output(verdicts, synthesised)
-                    if self._archive:
-                        self._archive.save_render(self.language.render_language, result)
 
             cost = self.cost_tracker.summarize()
             log.log_cost_summary(cost)
@@ -399,7 +418,13 @@ class Orchestrator:
                     replace(self.parameters, task=primary.task),
                     cost,
                     language=self._language_manifest(),
-                    status="PARTIAL" if shape == "partial" else "COMPLETE",
+                    status=status,
+                    adjudication={
+                        "incomplete_packets": list(adjudication.incomplete_packets),
+                        "warning": adjudication.warning,
+                    }
+                    if adjudication
+                    else None,
                 )
                 if self._searches_performed:
                     self._archive.save_searches(self._searches_performed)
@@ -414,7 +439,7 @@ class Orchestrator:
     async def _adjudicate_branches(
         self,
         contexts: list[BranchContext],
-    ) -> tuple[list[CrossBranchVerdict], str]:
+    ) -> AdjudicationResult:
         """Compares the branch syntheses claim by claim and returns the verdicts plus the published markdown.
 
         Claims are packed into packets under the adjudicator's context window and one call is made per packet. A packet
@@ -430,21 +455,33 @@ class Orchestrator:
         if self._archive:
             self._archive.save_evidence(registry.spans())
         model = self.configuration.adjudicator.names[0]
-        # The syntheses and the evidence listing travel with every packet, so they count against the window too.
-        overhead = estimate_tokens("".join(syntheses.values()) + "".join(span.text for span in registry.spans()))
-        packets = partition_claims(
-            claims,
-            context_window=self.configuration.adjudicator.resolve_context_window(model),
-            max_output_tokens=self.configuration.adjudicator.resolve_max_output_tokens(model),
-            overhead_tokens=overhead,
-        )
+        try:
+            packets = partition_claims(
+                claims,
+                context_window=self.configuration.adjudicator.resolve_context_window(model),
+                max_output_tokens=self.configuration.adjudicator.resolve_max_output_tokens(model),
+                syntheses=syntheses,
+                evidence=registry.spans(),
+            )
+        except PacketSizeError as exception:
+            raise RunFailedError(str(exception)) from exception
 
         verdicts: list[CrossBranchVerdict] = []
         incomplete: list[int] = []
         for index, packet in enumerate(packets, start=1):
             system, user = build_cross_branch_adjudicator_prompt(packet, syntheses, registry.spans())
             request_sha256 = sha256_text(
-                json.dumps([self.configuration.provider, self._wire_model_id(model), model, system, user])
+                json.dumps(
+                    [
+                        self._task_sha256,
+                        self._configuration_sha256,
+                        self.configuration.provider,
+                        self._wire_model_id(model),
+                        model,
+                        system,
+                        user,
+                    ]
+                )
             )
             resumed = self._completed_adjudication_packet(index, request_sha256)
             parsed: list[CrossBranchVerdict] | None = None
@@ -475,10 +512,25 @@ class Orchestrator:
                     continue
                 break
             packet_verdicts = parsed or []
-            covered = {verdict.claim for verdict in packet_verdicts}
-            missing = [claim for claim in packet if claim.key not in covered]
+            packet_claims = {claim.key: claim for claim in packet}
+            covered: set[str] = set()
             for verdict in packet_verdicts:
-                normalised, violations = apply_evidence_rules(verdict, registry, syntheses)
+                violations: list[str] = []
+                claim = packet_claims.get(verdict.claim)
+                if claim is None:
+                    violations.append("claim key is not in this packet")
+                if verdict.claim in covered:
+                    violations.append("duplicate claim key in this packet")
+                covered.add(verdict.claim)
+                for branch, passage in verdict.by_branch.items():
+                    if branch not in syntheses:
+                        violations.append(f"unknown branch tag {branch}")
+                    elif passage and passage not in syntheses[branch]:
+                        violations.append(f"passage does not appear verbatim in the {branch} synthesis")
+                # Published testimony comes from deterministic extraction, never from the model's JSON.
+                verified = replace(verdict, by_branch=dict(claim.by_branch) if claim else {})
+                normalised, evidence_violations = apply_evidence_rules(verified, registry, syntheses)
+                violations.extend(evidence_violations)
                 if violations:
                     log.log_evidence_invalid(packet=index, claim=verdict.claim, violations=violations)
                     if self._archive:
@@ -489,6 +541,7 @@ class Orchestrator:
                 normalised.packet = index
                 normalised.adjudicator = model
                 verdicts.append(normalised)
+            missing = [claim for claim in packet if claim.key not in covered]
             if parsed is None or missing:
                 incomplete.append(index)
                 error = error or "No verdict for claims: " + ", ".join(claim.key for claim in missing)
@@ -524,12 +577,18 @@ class Orchestrator:
             if verdicts:
                 adjudication_record["path"] = "cross-branch.md"
             self._archive.journal.append("adjudicated", **adjudication_record)
-        return verdicts, render_cross_branch(verdicts, syntheses=syntheses, adjudicator=model, incomplete=incomplete)
+        return AdjudicationResult(
+            verdicts=tuple(verdicts),
+            published=render_cross_branch(verdicts, syntheses=syntheses, adjudicator=model, incomplete=incomplete),
+            incomplete_packets=tuple(incomplete),
+        )
 
     async def _render_output(
         self,
-        verdicts: list[CrossBranchVerdict],
+        adjudication: AdjudicationResult,
         contexts: list[BranchContext],
+        *,
+        status: str,
     ) -> str:
         """Assembles the reader's language from the verdicts, never from a single branch's synthesis.
 
@@ -537,12 +596,13 @@ class Orchestrator:
         that were checked. The prose around the passages is translated into the render language, and a translation that
         fails leaves the source prose in place rather than inventing any.
         """
+        verdicts = adjudication.verdicts
         render_language = self.language.render_language or self.language.source
         branches = [context.branch.language for context in contexts]
         # A fixed ASCII label, never translated: it is the machine-readable record that this file is a rendering.
         marker = (
             f'CROSSFIRE-RENDER {{"language": "{render_language}", "attested": false, '
-            f'"branches": {json.dumps(branches)}, "claims": {len(verdicts)}}}'
+            f'"branches": {json.dumps(branches)}, "claims": {len(verdicts)}, "status": "{status}"}}'
         )
         header = (
             f"# Crossfire render ({render_language})\n\n"
@@ -551,10 +611,10 @@ class Orchestrator:
             f"Branches: {', '.join(branches)}. Claims compared: {len(verdicts)}."
         )
         lines: list[str] = [marker, "", await self._translate_render_prose(header, render_language)]
+        if adjudication.warning:
+            lines.extend(["", adjudication.warning])
         for verdict in verdicts:
-            prose = f"## {verdict.claim}\n\nState: {verdict.state.value}."
-            lines.append("")
-            lines.append(await self._translate_render_prose(prose, render_language))
+            lines.extend(["", f"## {verdict.claim}", "", f"State: {verdict.state.value}."])
             for branch, passage in verdict.by_branch.items():
                 lines.append(f"- {branch}: {passage or '(omitted)'}")
             if verdict.evidence_ids:
@@ -593,7 +653,7 @@ class Orchestrator:
             )
             return text
         translated = reply.strip()
-        if not translated or fidelity_violations(masked, translated, spans):
+        if not translated or fidelity_violations(masked, translated, spans) or re.search(r"(?m)^\s*State:", translated):
             log.log_translation_failed(
                 branch=target_language,
                 model=self.configuration.translator.names[0],
@@ -612,8 +672,48 @@ class Orchestrator:
             registry.harvest(branch, synthesis)
         return registry
 
-    def _journal_round(self, branch: str, round_num: int, synthesis_text: str) -> None:
-        """Records a completed round with the hash of its synthesis artefact."""
+    def _bind_run_inputs(self) -> None:
+        """Hashes the original task and the configuration that affects resumable work."""
+        self._task_sha256 = sha256_text(json.dumps(asdict(self._original_task), sort_keys=True))
+        parameters = asdict(self.parameters)
+        for field in ("task", "resume", "num_rounds", "language_cli"):
+            parameters.pop(field)
+        inputs = {
+            "configuration": asdict(self.configuration),
+            "language": asdict(self.language),
+            "parameters": parameters,
+        }
+        self._configuration_sha256 = sha256_text(json.dumps(inputs, sort_keys=True))
+
+    def _validate_resume_inputs(self) -> None:
+        """Rejects changed or unbound resume inputs before any instruction artefact is overwritten."""
+        if self._archive is None:
+            return
+        binding = {
+            "task_sha256": self._task_sha256,
+            "configuration_sha256": self._configuration_sha256,
+        }
+        if self.parameters.resume and self._journal_records:
+            previous = next(
+                (record for record in reversed(self._journal_records) if record.get("event") == "run_inputs"), None
+            )
+            if previous is None or any(previous.get(key) != value for key, value in binding.items()):
+                raise ValueError("Resume refused: the original task or configuration changed, or has no input binding.")
+        self._archive.journal.append("run_inputs", **binding)
+
+    def _round_inputs(self, previous_synthesis: str) -> dict[str, str]:
+        """Returns the task, configuration, branch instruction and predecessor hashes for a round."""
+        return {
+            "task_sha256": self._task_sha256,
+            "configuration_sha256": self._configuration_sha256,
+            "instruction_sha256": sha256_text(json.dumps(asdict(self._active_task), sort_keys=True)),
+            "predecessor_sha256": sha256_text(previous_synthesis),
+        }
+
+    def _journal_round(
+        self, branch: str, round_num: int, synthesis_text: str, previous_synthesis: str, *, early_stop: bool
+    ) -> None:
+        """Records a completed round with its input hashes and terminal early-stop decision."""
         if self._active_archive is None:
             return
         self._active_archive.journal.append(
@@ -622,7 +722,16 @@ class Orchestrator:
             round=round_num,
             path=self._active_archive.record_path(f"round-{round_num}/synthesis.md"),
             sha256=sha256_text(synthesis_text),
+            early_stop=early_stop,
+            **self._round_inputs(previous_synthesis),
         )
+
+    def _invalidate_rounds(self, branch: str, first_round: int) -> None:
+        """Invalidates a regenerated round and every dependent checkpoint, including after another interruption."""
+        if self._archive is None:
+            return
+        record = self._archive.journal.append("rounds_invalidated", branch=branch, from_round=first_round)
+        self._journal_records.append(record)
 
     def _journal_artefact_matches(self, record: dict[str, Any]) -> str | None:
         """Returns the artefact's text when it still hashes to the journalled value, else ``None``."""
@@ -636,15 +745,41 @@ class Orchestrator:
         text = target.read_text(encoding="utf-8")
         return text if sha256_text(text) == expected else None
 
-    def _completed_round(self, branch: str, round_num: int) -> str | None:
-        """Returns the synthesis of a journalled round whose artefact still matches, else ``None``."""
+    def _completed_round(self, branch: str, round_num: int, previous_synthesis: str) -> tuple[str, bool] | None:
+        """Returns a synthesis and stop decision only while its inputs and artefact still match."""
+        inputs = self._round_inputs(previous_synthesis)
         for record in reversed(self._journal_records):
+            if record.get("branch") != branch:
+                continue
+            if record.get("event") == "rounds_invalidated" and round_num >= record["from_round"]:
+                return None
+            if record.get("event") == "round_completed" and record.get("round") == round_num:
+                if any(record.get(key) != value for key, value in inputs.items()):
+                    return None
+                text = self._journal_artefact_matches(record)
+                return (text, bool(record.get("early_stop"))) if text is not None else None
+        return None
+
+    def _resumed_enrichment(self, context: BranchContext) -> BranchContext | None:
+        """Restores enrichment only while the branch input and saved brief still match."""
+        instruction_sha256 = sha256_text(json.dumps(asdict(context.task), sort_keys=True))
+        for record in reversed(self._journal_records):
+            if record.get("event") != "enrichment_completed" or record.get("branch") != context.branch.language:
+                continue
             if (
-                record.get("event") == "round_completed"
-                and record.get("branch") == branch
-                and record.get("round") == round_num
+                record.get("task_sha256") != self._task_sha256
+                or record.get("configuration_sha256") != self._configuration_sha256
+                or record.get("instruction_sha256") != instruction_sha256
             ):
-                return self._journal_artefact_matches(record)
+                return None
+            enriched = self._journal_artefact_matches(record)
+            if enriched is None:
+                return None
+            context.branch = replace(
+                context.branch, enriched_text=enriched, enriched_hash=sha256_text(enriched), state=BranchState.ENRICHED
+            )
+            context.task = replace(context.task, instruction=enriched)
+            return context
         return None
 
     def _completed_adjudication_packet(self, index: int, request_sha256: str) -> str | None:
@@ -662,6 +797,11 @@ class Orchestrator:
             return None
         for record in reversed(self._journal_records):
             if record.get("event") == "instruction_attested" and record.get("branch") == branch.language:
+                if (
+                    record.get("task_sha256") != self._task_sha256
+                    or record.get("configuration_sha256") != self._configuration_sha256
+                ):
+                    return None
                 text = self._journal_artefact_matches(record)
                 if text is None:
                     return None
@@ -752,7 +892,7 @@ class Orchestrator:
 
         if self.parameters.enrich and self.configuration.enricher.names:
             try:
-                context = await self._enrich_instruction(context)
+                context = self._resumed_enrichment(context) or await self._enrich_instruction(context)
             except _FATAL_ERRORS as exception:
                 raise RunFailedError(exclaim(str(exception))) from exception
             except Exception as exception:
@@ -764,30 +904,45 @@ class Orchestrator:
             self._active_task = context.task
 
         previous_synthesis: str = ""
+        reuse_rounds = True
         for round_num in range(1, self.parameters.num_rounds + 1):
             self._progress.on_round_start(round_num, self.parameters.num_rounds)
-            resumed = self._completed_round(context.branch.language, round_num)
+            resumed = (
+                self._completed_round(context.branch.language, round_num, previous_synthesis) if reuse_rounds else None
+            )
             if resumed is not None:
                 context.consecutive_round_failures = 0
-                previous_synthesis = resumed
+                previous_synthesis, stopped_early = resumed
                 context.synthesis_history.append(previous_synthesis)
                 log.log_round_resumed(branch=context.branch.language, round=round_num)
+                if stopped_early:
+                    break
                 continue
+            if reuse_rounds:
+                self._invalidate_rounds(context.branch.language, round_num)
+                reuse_rounds = False
             result = await self._run_round(round_num, previous_synthesis)
 
             if result is not None:
                 # Round succeeded: reset failure counter and update synthesis
                 context.consecutive_round_failures = 0
-                previous_synthesis = result.synthesis_text
-                context.synthesis_history.append(previous_synthesis)
-                self._journal_round(context.branch.language, round_num, previous_synthesis)
-
-                if (
+                stopped_early = (
                     self.parameters.early_stop
                     and round_num < self.parameters.num_rounds
                     and result.reviews is not None
                     and self._should_stop_early(result.reviews, self.parameters.early_stop_threshold)
-                ):
+                )
+                self._journal_round(
+                    context.branch.language,
+                    round_num,
+                    result.synthesis_text,
+                    previous_synthesis,
+                    early_stop=stopped_early,
+                )
+                previous_synthesis = result.synthesis_text
+                context.synthesis_history.append(previous_synthesis)
+
+                if stopped_early:
                     remaining = self.parameters.num_rounds - round_num
                     log.log_early_stop(
                         round=round_num,
@@ -881,6 +1036,15 @@ class Orchestrator:
 
         if self._active_archive:
             self._active_archive.save_enriched(enriched)
+            self._active_archive.journal.append(
+                "enrichment_completed",
+                branch=context.branch.language,
+                path=self._active_archive.record_path("enriched-instruction.md"),
+                sha256=sha256_text(enriched),
+                task_sha256=self._task_sha256,
+                configuration_sha256=self._configuration_sha256,
+                instruction_sha256=sha256_text(json.dumps(asdict(context.task), sort_keys=True)),
+            )
 
         context.branch = replace(
             context.branch,

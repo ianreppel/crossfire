@@ -26,7 +26,8 @@ async def run_two_branch_adjudication(fake_transport: FakeTransport, tmp_path: P
     fake_transport.queue(
         "adjudicator",
         '{"crossfire_adjudication": {"verdicts": [{"claim": "' + claim.key + '", "state": "disagrees", '
-        '"by_branch": {"en": "The toll was 200,000 or more [1].", "de": "Die Zahl der Toten ist umstritten."}, '
+        '"by_branch": {"en": "The toll was 200,000 or more [1].", "de": "'
+        'Die Zahl der Toten ist in den Quellen umstritten."}, '
         '"evidence_ids": ["' + source_id + '"]}]}}\n'
         'CROSSFIRE-ADJUDICATION {"claims": 1, "unavailable": 0}',
     )
@@ -44,7 +45,7 @@ class TestRender:
         render = (tmp_path / "render" / "en.md").read_text(encoding="utf-8")
 
         assert "The toll was 200,000 or more [1]." in render, "the English passage is published verbatim"
-        assert "Die Zahl der Toten ist umstritten." in render, "the German passage is published verbatim"
+        assert "Die Zahl der Toten ist in den Quellen umstritten." in render, "the German passage is published verbatim"
         assert "disagrees" in render
         assert render != ENGLISH_ANSWER, "a render is not one branch's synthesis"
         assert render != GERMAN_ANSWER

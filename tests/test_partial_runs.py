@@ -36,7 +36,12 @@ async def test_consecutive_failures_preserve_output_as_partial(
     tmp_path: Path,
     clean_logger: logging.Logger,
 ) -> None:
-    fake_transport.default("reviewer", "adjudicator")
+    fake_transport.default("reviewer")
+    fake_transport.queue(
+        "adjudicator",
+        json.dumps({"crossfire_adjudication": {"verdicts": [{"claim": f"text:{ANSWER}", "state": "no_evidence"}]}})
+        + '\nCROSSFIRE-ADJUDICATION {"claims": 1, "unavailable": 1}',
+    )
     fake_transport.queue("generator", *replies)
     fake_transport.queue("synthesizer", *([ANSWER] * 4))
     capture = LogCapture()

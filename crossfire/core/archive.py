@@ -86,15 +86,50 @@ class RunJournal:
             raise ArchiveWriteError(f"Could not append to {self.path}: {exception}") from exception
         return record
 
+    def _parse_records(self, contents: bytes) -> list[dict[str, Any]]:
+        """Parses complete records and identifies the line of any corruption."""
+        records: list[dict[str, Any]] = []
+        for number, line in enumerate(contents.split(b"\n"), start=1):
+            if not line.strip():
+                continue
+            try:
+                record = json.loads(line)
+                if not isinstance(record, dict):
+                    raise ValueError("a journal record must be an object")
+            except (ValueError, UnicodeDecodeError) as exception:
+                raise ValueError(f"Corrupt journal {self.path} at line {number}: {exception}") from exception
+            records.append(record)
+        return records
+
+    def recover_tail(self) -> None:
+        """Recovers an unterminated final record while the caller holds the owner lock."""
+        if not self.path.is_file():
+            return
+        contents = self.path.read_bytes()
+        boundary = contents.rfind(b"\n") + 1
+        self._parse_records(contents[:boundary])
+        tail = contents[boundary:]
+        if not tail:
+            return
+        try:
+            self._parse_records(tail)
+        except ValueError:
+            with self.path.open("r+b") as handle:
+                handle.truncate(boundary)
+                handle.flush()
+                os.fsync(handle.fileno())
+        else:
+            # A complete JSON object may have been written before the terminating newline was lost.
+            with self.path.open("ab") as handle:
+                handle.write(b"\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+
     def replay(self) -> list[dict[str, Any]]:
-        """Returns every recorded event, in the order it was appended."""
+        """Returns every recorded event, rejecting corruption with its line number."""
         if not self.path.is_file():
             return []
-        records: list[dict[str, Any]] = []
-        for line in self.path.read_text(encoding="utf-8").splitlines():
-            if line.strip():
-                records.append(json.loads(line))
-        return records
+        return self._parse_records(self.path.read_bytes())
 
 
 class RunArchive:
@@ -160,6 +195,7 @@ class RunArchive:
                         "started_at": self._owner.started_at,
                     }
                 ):
+                    self.journal.recover_tail()
                     return self._owner
                 alive = _process_is_alive(recorded_pid)
                 if alive:
@@ -169,12 +205,14 @@ class RunArchive:
                     )
                 if not adopt_stale:
                     raise ArchiveOwnerError(f"Run directory {self.base} has a stale owner. Use --resume to adopt it.")
+                self.journal.recover_tail()
                 self.journal.append(
                     "owner_adopted",
                     previous_pid=recorded_pid,
                     pid=owner.pid,
                     previous_alive=alive,
                 )
+            self.journal.recover_tail()
             handle.seek(0)
             handle.truncate()
             handle.write(json.dumps({"pid": owner.pid, "started_at": owner.started_at}))
@@ -293,6 +331,7 @@ class RunArchive:
         cost: dict[str, Any],
         language: dict[str, Any] | None = None,
         status: str = "COMPLETE",
+        adjudication: dict[str, Any] | None = None,
     ) -> None:
         meta = {
             "mode": parameters.mode.value,
@@ -309,6 +348,8 @@ class RunArchive:
         }
         if language is not None:
             meta["language"] = language
+        if adjudication is not None:
+            meta["adjudication"] = adjudication
         self._write("meta.json", json.dumps(meta, indent=2, default=str))
 
     def save_searches(self, searches: list[dict[str, str | int]]) -> None:

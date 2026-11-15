@@ -62,7 +62,7 @@ class TestResume:
     async def test_resume_reruns_a_round_whose_artefact_was_torn(
         self, fake_transport: FakeTransport, tmp_path: Path
     ) -> None:
-        """A kill between two units leaves a torn artefact; the hash rule redoes exactly that round."""
+        """A torn synthesis invalidates that round and every later dependent round in its branch."""
         instruction = "Explain the Nanjing death toll with sources."
         fake_transport.default("generator", "reviewer", "synthesizer", "adjudicator")
         first = orchestrator_for(instruction, tmp_path, num_rounds=3, branches=("en", "de"))
@@ -75,7 +75,9 @@ class TestResume:
         resumed = orchestrator_for(instruction, tmp_path, num_rounds=3, branches=("en", "de"), resume=True)
         await resumed.run()
 
-        assert fake_transport.count("generator") - settled == 1, "only the torn round is re-run, for one branch"
+        assert fake_transport.count("generator") - settled == 2, (
+            "the torn round and its dependent round are re-run, for one branch"
+        )
         assert torn.read_text(encoding="utf-8") != "half a synthesis"
 
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import re
 from collections import defaultdict
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -566,20 +566,32 @@ _ADJUDICATION_STATES: tuple[str, ...] = (
 
 def build_cross_branch_adjudicator_prompt(
     claims: Sequence[Any],
-    syntheses: dict[str, str],
+    syntheses: Mapping[str, str],
     evidence: Sequence[Any],
 ) -> tuple[str, str]:
-    """Builds the adjudicator prompt for one packet of claims.
-
-    The syntheses travel verbatim in their own languages, alongside the evidence registry listing and the claims with
-    each branch's passage. Both the verdict schema and the closing control envelope are spelled out, so the reply is
-    machine-readable whatever language the prose around it uses.
-    """
-    parts: list[str] = ["[CROSS-BRANCH ADJUDICATION]"]
-    for branch, synthesis in syntheses.items():
-        parts.append(f"\n[BRANCH {branch}]\n{synthesis}")
-    parts.append("\n[EVIDENCE]")
+    """Builds a packet prompt with only its verbatim passages and their cited evidence."""
+    passages: dict[str, list[str]] = {branch: [] for branch in syntheses}
+    for claim in claims:
+        for branch, passage in claim.by_branch.items():
+            if branch in passages and passage and passage not in passages[branch]:
+                passages[branch].append(passage)
+    packet_texts = {branch: "\n".join(texts) for branch, texts in passages.items()}
+    markers = {branch: set(re.findall(r"\[\d+\]", text)) for branch, text in packet_texts.items()}
+    relevant_evidence: list[Any] = []
     for span in evidence:
+        if span.branch:
+            text = packet_texts.get(span.branch, "")
+            reference = re.match(r"^\[\d+\]", span.text)
+            if span.text in text or (reference and reference.group(0) in markers.get(span.branch, set())):
+                relevant_evidence.append(span)
+        elif any(span.text in text for text in packet_texts.values()):
+            relevant_evidence.append(span)
+
+    parts: list[str] = ["[CROSS-BRANCH ADJUDICATION]"]
+    for branch, text in packet_texts.items():
+        parts.append(f"\n[BRANCH {branch}]\n{text or '(omitted)'}")
+    parts.append("\n[EVIDENCE]")
+    for span in relevant_evidence:
         parts.append(f"\n{span.id} ({span.origin}): {span.text}")
     parts.append("\n[CLAIMS]")
     for claim in claims:
@@ -631,7 +643,10 @@ def parse_cross_branch_verdicts(text: str) -> list[CrossBranchVerdict]:
     for entry in entries:
         if not isinstance(entry, dict):
             raise EnvelopeError("A verdict is not a JSON object.")
-        claim = str(entry.get("claim", "")).strip()
+        claim = str(entry.get("claim", ""))
+        if "\n" in claim or "\r" in claim:
+            raise EnvelopeError("A verdict claim must occupy a single line.")
+        claim = claim.strip()
         if not claim:
             raise EnvelopeError("A verdict must name its claim.")
         state_text = str(entry.get("state", ""))

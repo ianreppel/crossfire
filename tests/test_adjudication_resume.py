@@ -11,6 +11,8 @@ import pytest
 from crossfire.core.adjudication import extract_claims
 from crossfire.core.archive import RunArchive
 from crossfire.core.orchestrator import Orchestrator
+from crossfire.core.prompts import build_cross_branch_adjudicator_prompt
+from crossfire.core.tokens import compute_token_budget, estimate_tokens
 from tests.fakes.transport import FakeTransport
 from tests.helpers import orchestrator_for
 
@@ -31,8 +33,13 @@ def packet_reply(keys: list[str], state: str = "disagrees") -> str:
 def packet_orchestrator(tmp_path: Path, *, resume: bool = False, model: str = "adj-a") -> Orchestrator:
     """Builds a run whose adjudication window gives each claim its own packet."""
     orchestrator = orchestrator_for("Explain the findings.", tmp_path, resume=resume)
-    group = replace(orchestrator.configuration.adjudicator, names=(model,), context_window=1000, max_output_tokens=790)
+    group = replace(orchestrator.configuration.adjudicator, names=(model,), context_window=1000, max_output_tokens=350)
     orchestrator.configuration = replace(orchestrator.configuration, adjudicator=group)
+    sizes: list[int] = []
+    for count in (1, 2):
+        system, user = build_cross_branch_adjudicator_prompt(CLAIMS[:count], {"en": ANSWER, "de": ANSWER}, ())
+        sizes.append(estimate_tokens(system) + estimate_tokens(user) + group.max_output_tokens)
+    assert sizes[0] <= compute_token_budget(group.context_window) < sizes[1]
     return orchestrator
 
 
@@ -66,7 +73,7 @@ async def test_adjudication_accounts_for_every_claim(
         assert "adjudication_incomplete" in published
 
 
-@pytest.mark.parametrize(("change", "expected_calls"), [("intact", 0), ("torn", 1), ("request", 3)])
+@pytest.mark.parametrize(("change", "expected_calls"), [("intact", 0), ("torn", 1), ("request", 0)])
 async def test_adjudication_resume_checks_request_and_reply_hashes(
     change: str, expected_calls: int, fake_transport: FakeTransport, tmp_path: Path
 ) -> None:
@@ -82,12 +89,15 @@ async def test_adjudication_resume_checks_request_and_reply_hashes(
     elif change == "request":
         fake_transport.queue("adjudicator", *(packet_reply([claim.key]) for claim in CLAIMS))
 
-    await packet_orchestrator(tmp_path, resume=True, model="adj-b" if change == "request" else "adj-a").run()
+    if change == "request":
+        with pytest.raises(ValueError, match="Resume refused"):
+            await packet_orchestrator(tmp_path, resume=True, model="adj-b").run()
+    else:
+        await packet_orchestrator(tmp_path, resume=True).run()
 
     assert fake_transport.count("adjudicator") - 3 == expected_calls
     assert fake_transport.count("synthesizer") == 2
-    if change != "request":
-        assert (tmp_path / "cross-branch.md").read_text(encoding="utf-8") == original
+    assert (tmp_path / "cross-branch.md").read_text(encoding="utf-8") == original
 
 
 async def test_adjudication_resume_retries_only_unavailable_packet(

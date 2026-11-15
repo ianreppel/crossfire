@@ -44,9 +44,11 @@ def two_branch_configuration(
     *,
     source: str = "en",
     branches: tuple[str, ...] = ("en", "de"),
+    enricher: bool = False,
 ) -> CrossfireConfiguration:
     """A configuration whose source is *source* and whose branches are *branches*."""
     return CrossfireConfiguration(
+        enricher=ModelGroup(names=("enrich-a",) if enricher else (), context_window=16000),
         generators=ModelGroup(names=("gen-a",), context_window=16000),
         reviewers=ModelGroup(names=("rev-a",), context_window=16000),
         synthesizer=ModelGroup(names=("synth-a",), context_window=32000),
@@ -67,18 +69,20 @@ def orchestrator_for(
     branches: tuple[str, ...] = ("en", "de"),
     resume: bool = False,
     render_language: str | None = None,
+    enricher: bool = False,
+    context: str = "",
 ) -> Orchestrator:
     """Builds an orchestrator over *num_rounds* rounds, ready to call models through the fake transport."""
     parameters = RunParameters(
         mode=Mode.RESEARCH,
-        task=Task(instruction=instruction),
+        task=Task(instruction=instruction, context=context),
         num_generators=1,
         num_reviewers_per_candidate=1,
         num_rounds=num_rounds,
         resume=resume,
         early_stop=False,
     )
-    configuration = two_branch_configuration(source=source, branches=branches)
+    configuration = two_branch_configuration(source=source, branches=branches, enricher=enricher)
     if render_language is not None:
         language = replace(configuration.language, render_language=render_language)
         configuration = replace(configuration, language=language)

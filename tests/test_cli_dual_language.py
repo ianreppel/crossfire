@@ -27,7 +27,8 @@ def test_cli_run_writes_two_branches_an_adjudication_and_a_render(
     )
     fake_transport.queue(
         "adjudicator",
-        '{"crossfire_adjudication": {"verdicts": [{"claim": "the death toll", "state": "absent_in_branch", '
+        '{"crossfire_adjudication": {"verdicts": [{"claim": "text:The toll was 200,000 or more [1].", '
+        '"state": "absent_in_branch", '
         '"by_branch": {"en": "The toll was 200,000 or more [1].", "de": ""}}]}}\n'
         'CROSSFIRE-ADJUDICATION {"claims": 1, "unavailable": 1}',
     )

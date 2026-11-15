@@ -9,6 +9,7 @@ import pytest
 
 from crossfire.core.adjudication import Claim, extract_claims, partition_claims
 from crossfire.core.evidence import EvidenceRegistry
+from crossfire.core.prompts import build_cross_branch_adjudicator_prompt
 from crossfire.core.tokens import compute_token_budget, estimate_tokens
 from tests.fakes.transport import FakeTransport
 from tests.helpers import orchestrator_for
@@ -36,6 +37,10 @@ class TestAdjudication:
         )
         for packet in packets:
             assert sum(estimate_tokens(claim.text) for claim in packet) <= budget
+            system, user = build_cross_branch_adjudicator_prompt(packet, {"en": "", "de": ""}, ())
+            assert estimate_tokens(system) + estimate_tokens(user) + max_output_tokens <= compute_token_budget(
+                context_window
+            )
 
     def test_claims_are_matched_across_branches_by_verbatim_text(self) -> None:
         english = "The toll was 200,000 or more [1].\n\n# Heading\n\nThe IMTFE recorded the figure in 1948."
@@ -66,7 +71,8 @@ class TestAdjudication:
         fake_transport.queue(
             "adjudicator",
             '{"crossfire_adjudication": {"verdicts": [{"claim": "' + claim.key + '", "state": "disagrees", '
-            '"by_branch": {"en": "The toll was 200,000 or more [1].", "de": "Die Zahl der Toten ist umstritten."}, '
+            '"by_branch": {"en": "The toll was 200,000 or more [1].", "de": "'
+            'Die Zahl der Toten ist in den Quellen umstritten."}, '
             '"evidence_ids": ["' + source_id + '"]}]}}\n'
             'CROSSFIRE-ADJUDICATION {"claims": 1, "unavailable": 0}',
         )
@@ -77,7 +83,7 @@ class TestAdjudication:
         cross_branch = (tmp_path / "cross-branch.md").read_text(encoding="utf-8")
         assert "disagrees" in cross_branch
         assert "The toll was 200,000 or more [1]." in cross_branch
-        assert "Die Zahl der Toten ist umstritten." in cross_branch
+        assert "Die Zahl der Toten ist in den Quellen umstritten." in cross_branch
         assert source_id in cross_branch
         assert fake_transport.count("adjudicator") == 1
         assert claim.text in cross_branch
