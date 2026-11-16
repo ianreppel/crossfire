@@ -141,6 +141,47 @@ api_key_env = "CUSTOM_KEY"
         )
         assert native.validate(num_generators=1, num_reviewers_per_candidate=1) == []
 
+    @pytest.mark.parametrize("empty_pin", ["opencode:", "opencode: ", "opencode:   "])
+    @pytest.mark.parametrize("group_name", ["generators", "reviewers", "synthesizer", "translator", "adjudicator"])
+    def test_provider_pin_without_a_model_id_is_refused(self, group_name: str, empty_pin: str) -> None:
+        configuration = load_configuration(configuration_path=Path("/nonexistent/crossfire.toml"))
+        group = getattr(configuration, group_name)
+        broken = replace(
+            configuration,
+            provider="opencode",
+            **{group_name: replace(group, names=(empty_pin, *group.names))},
+        )
+        errors = broken.validate(num_generators=1, num_reviewers_per_candidate=1)
+        assert any(
+            error.startswith(f"{group_name}: ") and "no model ID" in error and repr(empty_pin) in error
+            for error in errors
+        ), errors
+
+    def test_provider_pin_with_a_model_id_is_not_refused_as_empty(self) -> None:
+        configuration = load_configuration(configuration_path=Path("/nonexistent/crossfire.toml"))
+        pinned = replace(
+            configuration,
+            provider="opencode",
+            generators=replace(
+                configuration.generators, names=("opencode:openai/gpt-6-sol", *configuration.generators.names)
+            ),
+        )
+        errors = pinned.validate(num_generators=1, num_reviewers_per_candidate=1)
+        assert not any("no model ID" in error for error in errors), errors
+
+    def test_alias_that_resolves_to_an_empty_wire_id_is_refused(self) -> None:
+        configuration = load_configuration(configuration_path=Path("/nonexistent/crossfire.toml"))
+        opencode = next(provider for provider in configuration.providers if provider.name == "opencode")
+        broken_provider = replace(opencode, model_ids=(*opencode.model_ids, ("vendor/blank", "")))
+        broken = replace(
+            configuration,
+            provider="opencode",
+            providers=tuple(broken_provider if p.name == "opencode" else p for p in configuration.providers),
+            generators=replace(configuration.generators, names=("vendor/blank", *configuration.generators.names)),
+        )
+        errors = broken.validate(num_generators=1, num_reviewers_per_candidate=1)
+        assert any(error.startswith("generators: ") and "no model ID" in error for error in errors), errors
+
     def test_per_model_overrides_follow_their_model_when_scoped(self):
         configuration = load_configuration(configuration_path=Path("/nonexistent/crossfire.toml"))
         mixed = replace(

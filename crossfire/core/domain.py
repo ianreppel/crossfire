@@ -582,6 +582,14 @@ class CrossfireConfiguration:
             ("translator", self.translator),
             ("adjudicator", self.adjudicator),
         ]:
+            # A provider pin with nothing after it (``opencode:``) would reach the gateway as an empty model ID.
+            errors.extend(
+                f"{label}: model {model!r} resolves to no model ID on '{active_provider.name}'. "
+                "Name the model after the provider prefix."
+                for model in group.names
+                if not active_provider.resolve_wire_model_id(model).strip()
+            )
+
             if not active_provider.allow_training_models:
                 wire_model_ids = [active_provider.resolve_wire_model_id(model) for model in group.names]
                 errors.extend(

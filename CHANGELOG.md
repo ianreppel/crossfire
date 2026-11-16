@@ -16,6 +16,7 @@
 - OpenCode Zen protocol drift tests compare Crossfire's protocol mapping with the protocol documented for each endpoint in the [OpenCode Zen docs](https://opencode.ai/docs/zen/).
 - A module-scoped fixture skips all network drift tests if any required documentation page or model-list endpoint for OpenCode Zen or OpenCode Go is unreachable.
 - Validation requires each provider's base URL to start with `http://` or `https://`.
+- Validation refuses a model that resolves to an empty wire ID on the active gateway, such as `opencode:` with nothing after the provider prefix.
 - Crossfire restricts a model with a configured provider pin to runs that use the named gateway.
 - Prefixes that do not match a configured provider name remain part of the model ID.
 - OpenCode model families follow the vendor's documented wire protocols: minimax and qwen3.8-max route to chat, and the whole gpt-5.x family to responses.
